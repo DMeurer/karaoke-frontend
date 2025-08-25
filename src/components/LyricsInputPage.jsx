@@ -22,8 +22,10 @@ function LyricsInputPage() {
 	// Lyrics input state management
 	const [lyrics, setLyrics] = useState('')
 	const [dragActive, setDragActive] = useState(false)
-	const [uploadMethod, setUploadMethod] = useState('paste') // 'paste' or 'file'
+	const [uploadMethod, setUploadMethod] = useState('paste') // 'paste', 'file', or 'json'
+	const [karaokeData, setKaraokeData] = useState(null)
 	const fileInputRef = useRef(null)
+	const jsonInputRef = useRef(null)
 	
 	// Handle textarea input changes
 	const handleLyricsChange = (event) => {
@@ -34,6 +36,12 @@ function LyricsInputPage() {
 	const handleFileSelect = (event) => {
 		const file = event.target.files[0]
 		processFile(file)
+	}
+	
+	// Handle JSON file input selection
+	const handleJsonFileSelect = (event) => {
+		const file = event.target.files[0]
+		processJsonFile(file)
 	}
 	
 	/**
@@ -49,6 +57,39 @@ function LyricsInputPage() {
 			reader.readAsText(file)
 		} else {
 			alert('Please select a valid text file (.txt)')
+		}
+	}
+	
+	/**
+	 * Process uploaded JSON karaoke file
+	 * @param {File} file - The uploaded .json file
+	 */
+	const processJsonFile = (file) => {
+		if (file && file.name.endsWith('.json')) {
+			const reader = new FileReader()
+			reader.onload = (e) => {
+				try {
+					const jsonData = JSON.parse(e.target.result)
+					
+					// Validate that it's a proper karaoke JSON
+					if (jsonData.blocks && Array.isArray(jsonData.blocks)) {
+						setKaraokeData(jsonData)
+						
+						// Extract lyrics text from JSON for preview
+						const extractedLyrics = jsonData.blocks.map(block => {
+							return block.lines.map(line => line.text).join('\n')
+						}).join('\n\n')
+						setLyrics(extractedLyrics)
+					} else {
+						alert('Invalid karaoke file format. Please upload a properly formatted karaoke JSON file.')
+					}
+				} catch (error) {
+					alert('Error reading karaoke file. Please ensure it\'s a valid JSON file.')
+				}
+			}
+			reader.readAsText(file)
+		} else {
+			alert('Please select a valid JSON karaoke file.')
 		}
 	}
 	
@@ -72,15 +113,24 @@ function LyricsInputPage() {
 		e.stopPropagation()
 		setDragActive(false)
 		if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-			processFile(e.dataTransfer.files[0])
+			const file = e.dataTransfer.files[0]
+			if (uploadMethod === 'json') {
+				processJsonFile(file)
+			} else {
+				processFile(file)
+			}
 		}
 	}
 	
-	// Clear all lyrics text
+	// Clear all lyrics text and data
 	const clearLyrics = () => {
 		setLyrics('')
+		setKaraokeData(null)
 		if (fileInputRef.current) {
 			fileInputRef.current.value = ''
+		}
+		if (jsonInputRef.current) {
+			jsonInputRef.current.value = ''
 		}
 	}
 	
@@ -161,11 +211,13 @@ function LyricsInputPage() {
 			return
 		}
 		
-		const karaokeData = createKaraokeJSON(lyrics)
+		// Use uploaded JSON data if available, otherwise create new JSON structure
+		const finalKaraokeData = karaokeData || createKaraokeJSON(lyrics)
+		
 		navigate('/timing-sync', {
 			state: {
 				audioFile: audioFile,
-				karaokeData: karaokeData
+				karaokeData: finalKaraokeData
 			}
 		})
 	}
@@ -191,7 +243,7 @@ function LyricsInputPage() {
 							Add Lyrics
 						</h1>
 						<p style={{color: '#666'}}>
-							Upload a text file or paste your lyrics directly
+							Paste lyrics, upload a text file, or upload an existing JSON karaoke file
 						</p>
 						{/* Show audio file confirmation */}
 						{audioFile && (
@@ -213,7 +265,8 @@ function LyricsInputPage() {
 						display: 'flex',
 						justifyContent: 'center',
 						marginBottom: '2rem',
-						gap: '1rem'
+						gap: '0.5rem',
+						flexWrap: 'wrap'
 					}}>
 						<button
 							onClick={() => setUploadMethod('paste')}
@@ -241,7 +294,21 @@ function LyricsInputPage() {
 								transition: 'all 0.2s'
 							}}
 						>
-							📄 Upload File
+							📄 Upload Text File
+						</button>
+						<button
+							onClick={() => setUploadMethod('json')}
+							style={{
+								padding: '10px 20px',
+								borderRadius: '25px',
+								border: `2px solid ${uploadMethod === 'json' ? '#667eea' : '#ddd'}`,
+								background: uploadMethod === 'json' ? '#667eea' : 'white',
+								color: uploadMethod === 'json' ? 'white' : '#666',
+								cursor: 'pointer',
+								transition: 'all 0.2s'
+							}}
+						>
+							📁 Upload JSON File
 						</button>
 					</div>
 					
@@ -301,8 +368,8 @@ function LyricsInputPage() {
 								)}
 							</div>
 						</div>
-					) : (
-						/* File Upload Method - Drag & drop area */
+					) : uploadMethod === 'file' ? (
+						/* File Upload Method - Drag & drop area for text files */
 						<div
 							style={{
 								border: `3px dashed ${dragActive ? '#667eea' : '#ddd'}`,
@@ -355,6 +422,82 @@ function LyricsInputPage() {
 							>
 								Browse Files
 							</button>
+						</div>
+					) : (
+						/* JSON Upload Method - Drag & drop area for JSON files */
+						<div
+							style={{
+								border: `3px dashed ${dragActive ? '#667eea' : '#ddd'}`,
+								borderRadius: '12px',
+								padding: '3rem',
+								textAlign: 'center',
+								marginBottom: '2rem',
+								background: dragActive ? '#f0f4ff' : karaokeData ? '#e8f5e8' : '#fafafa',
+								transition: 'all 0.3s ease',
+								cursor: 'pointer'
+							}}
+							onDragEnter={handleDrag}
+							onDragLeave={handleDrag}
+							onDragOver={handleDrag}
+							onDrop={handleDrop}
+							onClick={() => jsonInputRef.current?.click()}
+						>
+							<div style={{fontSize: '3rem', marginBottom: '1rem'}}>
+								{karaokeData ? '✅' : dragActive ? '📁' : '📋'}
+							</div>
+							<h3 style={{marginBottom: '1rem', color: '#333'}}>
+								{karaokeData ? 'JSON Karaoke File Loaded!' : 
+								 dragActive ? 'Drop your JSON file here!' : 'Upload Karaoke JSON File'}
+							</h3>
+							<p style={{color: '#666', marginBottom: '1.5rem'}}>
+								{karaokeData ? `File loaded with ${karaokeData.blocks.length} blocks and existing timing data` :
+								 dragActive ? 'Release to upload your file' : 'Drag & drop a .json karaoke file here, or click to browse'}
+							</p>
+							<input
+								ref={jsonInputRef}
+								type="file"
+								accept=".json,application/json"
+								onChange={handleJsonFileSelect}
+								style={{display: 'none'}}
+							/>
+							<button
+								type="button"
+								onClick={(e) => {
+									e.stopPropagation()
+									jsonInputRef.current?.click()
+								}}
+								style={{
+									padding: '12px 24px',
+									border: '2px solid #667eea',
+									borderRadius: '6px',
+									background: 'white',
+									color: '#667eea',
+									cursor: 'pointer',
+									fontSize: '1rem',
+									fontWeight: '500'
+								}}
+							>
+								{karaokeData ? 'Replace JSON File' : 'Browse Files'}
+							</button>
+							
+							{karaokeData && (
+								<div style={{
+									marginTop: '1rem',
+									padding: '1rem',
+									background: 'rgba(255,255,255,0.8)',
+									borderRadius: '6px',
+									fontSize: '0.9rem',
+									color: '#333'
+								}}>
+									<div><strong>Blocks:</strong> {karaokeData.blocks.length}</div>
+									{karaokeData.voices && (
+										<div><strong>Voices:</strong> {karaokeData.voices.length}</div>
+									)}
+									{karaokeData.version && (
+										<div><strong>Version:</strong> {karaokeData.version}</div>
+									)}
+								</div>
+							)}
 						</div>
 					)}
 					
