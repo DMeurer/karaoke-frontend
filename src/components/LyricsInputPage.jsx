@@ -122,17 +122,30 @@ function LyricsInputPage() {
 				
 				return {
 					text: "",
-					start: blockIndex * 5000, // Dummy timestamps - 5 seconds per block
-					end: (blockIndex + 1) * 5000,
-					voice: 1,
+					start: 0, // Initialize all timestamps to 0
+					end: 0,
+					voice: 0, // 0 = undefined, will be set during recording
 					position: "C",
 					lines: lines.map((lineText, lineIndex) => ({
 						text: lineText,
-						start: blockIndex * 5000 + lineIndex * 1000, // Dummy line timestamps
-						end: blockIndex * 5000 + (lineIndex + 1) * 1000,
-						voice: 1,
+						start: 0, // Initialize all timestamps to 0
+						end: 0,
+						voice: 0, // 0 = undefined, will be set during recording
 						position: "",
-						words: []
+						words: lineText.split(' ').filter(word => word.trim()).map((wordText) => ({
+							text: wordText,
+							start: 0, // Initialize all timestamps to 0
+							end: 0,
+							voice: 0, // 0 = undefined, will be set during recording
+							position: "",
+							chars: wordText.split('').map((charText) => ({
+								text: charText,
+								start: 0, // Initialize all timestamps to 0
+								end: 0,
+								voice: 0, // 0 = undefined, will be set during recording
+								position: ""
+							}))
+						}))
 					}))
 				}
 			})

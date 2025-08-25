@@ -19,7 +19,7 @@ import {useLocation} from 'react-router-dom'
 function TimingSyncPage() {
 	const location = useLocation()
 	const audioFile = location.state?.audioFile
-	const karaokeData = location.state?.karaokeData
+	const initialKaraokeData = location.state?.karaokeData
 	
 	// Audio playback state
 	const [isPlaying, setIsPlaying] = useState(false)
@@ -28,14 +28,20 @@ function TimingSyncPage() {
 	const [playbackSpeed, setPlaybackSpeed] = useState(1.0)
 	const [audioUrl, setAudioUrl] = useState(null)
 	
+	// Karaoke data state (mutable copy from initial data)
+	const [karaokeData, setKaraokeData] = useState(initialKaraokeData)
+	
 	// Voice and synchronization state
-	const [voices, setVoices] = useState(karaokeData?.voices || [])
+	const [voices, setVoices] = useState(initialKaraokeData?.voices || [])
 	const [currentVoice, setCurrentVoice] = useState(1)
 	const [recordingMode, setRecordingMode] = useState('blocks') // 'blocks', 'lines', 'words', 'chars'
 	const [activeTokenIndex, setActiveTokenIndex] = useState(0)
 	const [isRecording, setIsRecording] = useState(false)
 	const [recordingStartTime, setRecordingStartTime] = useState(null)
 	const [wKeyPressed, setWKeyPressed] = useState(false)
+	const [unlockedModes, setUnlockedModes] = useState(['blocks']) // Start with only blocks unlocked
+	const [voicesExpanded, setVoicesExpanded] = useState(false) // Voice section collapsed by default
+	const wKeyPressedRef = useRef(false) // Use ref for immediate state tracking
 	
 	const audioRef = useRef(null)
 	
@@ -78,18 +84,37 @@ function TimingSyncPage() {
 	
 	/**
 	 * Handle seeking in audio progress bar
+	 * Only allows seeking when W is not pressed and playback is paused
 	 * @param {MouseEvent} event - Click event on progress bar
 	 */
 	const handleSeek = (event) => {
 		const audio = audioRef.current
-		const progressBar = event.currentTarget
-		const clickX = event.nativeEvent.offsetX
-		const width = progressBar.offsetWidth
-		const newTime = (clickX / width) * duration
 		
-		if (audio) {
+		// Only allow seeking when W is not pressed and playback is paused
+		if (!wKeyPressedRef.current && audio && audio.paused) {
+			const progressBar = event.currentTarget
+			const clickX = event.nativeEvent.offsetX
+			const width = progressBar.offsetWidth
+			const newTime = (clickX / width) * duration
+			
 			audio.currentTime = newTime
 			setCurrentTime(newTime)
+			console.log('Seeked to:', newTime, 's')
+		}
+	}
+	
+	/**
+	 * Toggle play/pause
+	 */
+	const togglePlayPause = () => {
+		if (audioRef.current) {
+			if (audioRef.current.paused) {
+				audioRef.current.play()
+				setIsPlaying(true)
+			} else {
+				audioRef.current.pause()
+				setIsPlaying(false)
+			}
 		}
 	}
 	
@@ -126,6 +151,128 @@ function TimingSyncPage() {
 		if (activeTokenIndex < tokens.length - 1) {
 			setActiveTokenIndex(prev => prev + 1)
 		}
+	}
+	
+	/**
+	 * Navigate in current recording mode
+	 * @param {number} direction - 1 for forward, -1 for backward
+	 */
+	const navigateCurrentLevel = (direction) => {
+		const tokens = getTokensByMode()
+		const newIndex = activeTokenIndex + direction
+		if (newIndex >= 0 && newIndex < tokens.length) {
+			setActiveTokenIndex(newIndex)
+		}
+	}
+	
+	/**
+	 * Navigate in parent level (e.g., blocks when in lines mode)
+	 * @param {number} direction - 1 for forward, -1 for backward
+	 */
+	const navigateParentLevel = (direction) => {
+		if (!karaokeData) return
+		
+		switch (recordingMode) {
+			case 'lines':
+				// Navigate blocks
+				const currentLineIndex = activeTokenIndex
+				const allLines = karaokeData.blocks.flatMap((block, blockIndex) => 
+					block.lines.map((line, lineIndex) => ({ blockIndex, lineIndex, globalIndex: currentLineIndex }))
+				)
+				const currentBlock = allLines.find(item => item.globalIndex === currentLineIndex)?.blockIndex || 0
+				const newBlock = Math.max(0, Math.min(karaokeData.blocks.length - 1, currentBlock + direction))
+				
+				if (newBlock !== currentBlock) {
+					// Jump to first line of the new block
+					const newLineIndex = karaokeData.blocks.slice(0, newBlock).reduce((acc, block) => acc + block.lines.length, 0)
+					setActiveTokenIndex(newLineIndex)
+				}
+				break
+				
+			case 'words':
+				// Navigate lines
+				const currentWordIndex = activeTokenIndex
+				const allWords = karaokeData.blocks.flatMap(block => 
+					block.lines.flatMap((line, lineIndex) => 
+						line.words.map(word => ({ lineIndex: block.lines.slice(0, lineIndex).reduce((acc, l) => acc + l.words.length, 0) }))
+					)
+				)
+				// Simplified: navigate by estimated line jumps
+				const wordsPerLine = 5 // Estimate
+				const newWordIndex = Math.max(0, Math.min(allWords.length - 1, activeTokenIndex + direction * wordsPerLine))
+				setActiveTokenIndex(newWordIndex)
+				break
+				
+			case 'chars':
+				// Navigate words
+				const currentCharIndex = activeTokenIndex
+				const allChars = karaokeData.blocks.flatMap(block => 
+					block.lines.flatMap(line => 
+						line.words.flatMap(word => word.chars)
+					)
+				)
+				// Simplified: navigate by estimated word jumps
+				const charsPerWord = 4 // Estimate
+				const newCharIndex = Math.max(0, Math.min(allChars.length - 1, activeTokenIndex + direction * charsPerWord))
+				setActiveTokenIndex(newCharIndex)
+				break
+				
+			default:
+				// In blocks mode, no parent level
+				break
+		}
+	}
+	
+	/**
+	 * Check if all tokens in a mode have been recorded (have non-zero timestamps)
+	 * @param {string} mode - Recording mode to check
+	 * @returns {boolean} True if all tokens in mode are recorded
+	 */
+	const isModeCompleted = (mode) => {
+		if (!karaokeData) return false
+		
+		switch (mode) {
+			case 'blocks':
+				return karaokeData.blocks.every(block => block.start > 0 && block.end > 0)
+			case 'lines':
+				return karaokeData.blocks.every(block => 
+					block.lines.every(line => line.start > 0 && line.end > 0)
+				)
+			case 'words':
+				return karaokeData.blocks.every(block => 
+					block.lines.every(line => 
+						line.words.every(word => word.start > 0 && word.end > 0)
+					)
+				)
+			case 'chars':
+				return karaokeData.blocks.every(block => 
+					block.lines.every(line => 
+						line.words.every(word => 
+							word.chars.every(char => char.start > 0 && char.end > 0)
+						)
+					)
+				)
+			default:
+				return false
+		}
+	}
+	
+	/**
+	 * Update unlocked modes based on completion status
+	 */
+	const updateUnlockedModes = () => {
+		const modes = ['blocks', 'lines', 'words', 'chars']
+		const newUnlockedModes = ['blocks'] // Always start with blocks
+		
+		for (let i = 0; i < modes.length - 1; i++) {
+			if (isModeCompleted(modes[i])) {
+				newUnlockedModes.push(modes[i + 1])
+			} else {
+				break
+			}
+		}
+		
+		setUnlockedModes(newUnlockedModes)
 	}
 	
 	/**
@@ -216,33 +363,51 @@ function TimingSyncPage() {
 		
 		setKaraokeData(updatedData)
 		console.log(`Recorded ${type} timestamp:`, currentTime, 'ms for token', activeTokenIndex, 'in mode', recordingMode)
+		
+		// Update unlocked modes after recording
+		setTimeout(() => updateUnlockedModes(), 100)
 	}
 	
 	// Handle W key DOWN/UP events for timing synchronization
 	useEffect(() => {
 		const handleKeyDown = (event) => {
-			if (event.key.toLowerCase() === 'w' && !event.repeat && !wKeyPressed) {
+			if (event.key.toLowerCase() === 'w' && !event.repeat && !wKeyPressedRef.current) {
+				wKeyPressedRef.current = true
 				setWKeyPressed(true)
-				if (!isRecording && audioRef.current) {
+				// Only record when music is playing
+				if (!isRecording && audioRef.current && !audioRef.current.paused && !audioRef.current.ended) {
 					// Start recording - record start timestamp
 					setIsRecording(true)
 					setRecordingStartTime(audioRef.current.currentTime)
 					recordTimestamp(audioRef.current.currentTime, 'start')
 					console.log('Started recording at:', audioRef.current.currentTime, 's')
+				} else if (audioRef.current && audioRef.current.paused) {
+					console.log('Cannot record while music is paused')
 				}
 			}
-			// Arrow keys for manual navigation
-			if (event.key === 'ArrowLeft') {
-				setActiveTokenIndex(prev => Math.max(0, prev - 1))
+			// Space key for play/pause
+			if (event.key === ' ' || event.key === 'Spacebar') {
+				event.preventDefault() // Prevent page scroll
+				togglePlayPause()
 			}
-			if (event.key === 'ArrowRight') {
-				const tokens = getTokensByMode()
-				setActiveTokenIndex(prev => Math.min(tokens.length - 1, prev + 1))
+			
+			// Navigation controls
+			if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+				const direction = event.key === 'ArrowRight' ? 1 : -1
+				
+				if (event.ctrlKey || event.metaKey) {
+					// CTRL+Arrow: Navigate in parent level
+					navigateParentLevel(direction)
+				} else {
+					// Arrow: Navigate in current level
+					navigateCurrentLevel(direction)
+				}
 			}
 		}
 		
 		const handleKeyUp = (event) => {
-			if (event.key.toLowerCase() === 'w' && wKeyPressed) {
+			if (event.key.toLowerCase() === 'w' && wKeyPressedRef.current) {
+				wKeyPressedRef.current = false
 				setWKeyPressed(false)
 				if (isRecording && audioRef.current) {
 					// End recording - record end timestamp and advance to next token
@@ -276,11 +441,17 @@ function TimingSyncPage() {
 			}
 		}
 		
-		window.addEventListener('keydown', handleKeyDown)
-		window.addEventListener('keyup', handleKeyUp)
+		// Attach to both window and document for better compatibility
+		window.addEventListener('keydown', handleKeyDown, true)
+		window.addEventListener('keyup', handleKeyUp, true)
+		document.addEventListener('keydown', handleKeyDown, true)
+		document.addEventListener('keyup', handleKeyUp, true)
+		
 		return () => {
-			window.removeEventListener('keydown', handleKeyDown)
-			window.removeEventListener('keyup', handleKeyUp)
+			window.removeEventListener('keydown', handleKeyDown, true)
+			window.removeEventListener('keyup', handleKeyUp, true)
+			document.removeEventListener('keydown', handleKeyDown, true)
+			document.removeEventListener('keyup', handleKeyUp, true)
 		}
 	}, [activeTokenIndex, recordingMode, karaokeData, isRecording, wKeyPressed, audioRef])
 	
@@ -288,6 +459,30 @@ function TimingSyncPage() {
 	useEffect(() => {
 		setActiveTokenIndex(0)
 	}, [recordingMode])
+	
+	// Update unlocked modes on component load and data changes
+	useEffect(() => {
+		updateUnlockedModes()
+	}, [karaokeData])
+	
+	// Update voices when karaokeData changes
+	useEffect(() => {
+		if (karaokeData?.voices) {
+			setVoices(karaokeData.voices)
+		}
+	}, [karaokeData])
+	
+	// Reset W key state if it gets stuck (fallback mechanism)
+	useEffect(() => {
+		const resetWKeyState = () => {
+			if (wKeyPressedRef.current !== wKeyPressed) {
+				wKeyPressedRef.current = wKeyPressed
+			}
+		}
+		
+		const interval = setInterval(resetWKeyState, 1000) // Check every second
+		return () => clearInterval(interval)
+	}, [wKeyPressed])
 	
 	// Update playback speed when changed
 	useEffect(() => {
@@ -502,12 +697,14 @@ function TimingSyncPage() {
 			}}>
 				{displayTokens.map((token, index) => {
 					const voice = voices.find(v => v.id === token.voice) || voices[0]
+					const isRecordingThisToken = isRecording && token.isActive
 					
 					return (
 						<div
 							key={`${token.type}-${token.displayIndex}`}
 							style={{
-								color: token.isActive ? (voice?.color || '#FFFFFF') : 'rgba(255,255,255,0.5)',
+								color: token.isActive ? (voice?.color || '#87CEEB') : 'rgba(255,255,255,0.5)',
+								boxShadow: isRecordingThisToken ? `0 0 20px ${voice?.color || '#87CEEB'}` : 'none',
 								fontSize: token.isActive ?
 									(recordingMode === 'blocks' ? '3rem' :
 										recordingMode === 'lines' ? '2.5rem' :
@@ -681,22 +878,66 @@ function TimingSyncPage() {
 					{/* Recording Mode Selection */}
 					<div style={{marginBottom: '2rem'}}>
 						<h4 style={{marginBottom: '1rem', color: '#333'}}>Recording Mode</h4>
-						<select
-							value={recordingMode}
-							onChange={(e) => setRecordingMode(e.target.value)}
-							style={{
-								width: '100%',
-								padding: '8px 12px',
-								borderRadius: '6px',
-								border: '2px solid #ddd',
-								fontSize: '1rem'
-							}}
-						>
-							<option value="blocks">Blocks</option>
-							<option value="lines">Lines</option>
-							<option value="words">Words</option>
-							<option value="chars">Characters</option>
-						</select>
+						<div style={{
+							display: 'flex',
+							gap: '0.5rem',
+							flexWrap: 'wrap'
+						}}>
+							{[
+								{value: 'blocks', label: 'Blocks'},
+								{value: 'lines', label: 'Lines'},
+								{value: 'words', label: 'Words'},
+								{value: 'chars', label: 'Chars'}
+							].map(mode => {
+								const isLocked = !unlockedModes.includes(mode.value)
+								const isSelected = recordingMode === mode.value
+								
+								return (
+									<label
+										key={mode.value}
+										style={{
+											flex: 1,
+											minWidth: 'fit-content',
+											cursor: isLocked ? 'not-allowed' : 'pointer',
+											display: 'flex',
+											alignItems: 'center',
+											justifyContent: 'center',
+											padding: '8px 12px',
+											borderRadius: '6px',
+											border: `2px solid ${isSelected ? '#667eea' : (isLocked ? '#ccc' : '#ddd')}`,
+											background: isSelected ? '#667eea' : (isLocked ? '#f5f5f5' : 'white'),
+											color: isSelected ? 'white' : (isLocked ? '#999' : '#666'),
+											fontSize: '0.9rem',
+											fontWeight: isSelected ? '600' : '400',
+											opacity: isLocked ? 0.6 : 1,
+											transition: 'all 0.2s ease'
+										}}
+										onMouseEnter={(e) => {
+											if (!isSelected && !isLocked) {
+												e.target.style.background = '#f0f4ff'
+												e.target.style.borderColor = '#a0a8ff'
+											}
+										}}
+										onMouseLeave={(e) => {
+											if (!isSelected && !isLocked) {
+												e.target.style.background = 'white'
+												e.target.style.borderColor = '#ddd'
+											}
+										}}
+									>
+										<input
+											type="radio"
+											value={mode.value}
+											checked={isSelected}
+											onChange={(e) => !isLocked && setRecordingMode(e.target.value)}
+											disabled={isLocked}
+											style={{display: 'none'}}
+										/>
+										{isLocked ? '🔒' : ''} {mode.label}
+									</label>
+								)
+							})}
+						</div>
 					</div>
 					
 					{/* Navigation Controls */}
@@ -759,27 +1000,60 @@ function TimingSyncPage() {
 						<h4 style={{marginBottom: '1rem', color: '#333'}}>Status</h4>
 						<div style={{
 							padding: '1rem',
-							background: isRecording ? '#fff3cd' : '#d1ecf1',
-							border: `1px solid ${isRecording ? '#ffeaa7' : '#bee5eb'}`,
+							background: isRecording ? '#fff3cd' : (audioRef.current?.paused !== false ? '#f8d7da' : '#d1ecf1'),
+							border: `1px solid ${isRecording ? '#ffeaa7' : (audioRef.current?.paused !== false ? '#f5c6cb' : '#bee5eb')}`,
 							borderRadius: '6px',
-							color: isRecording ? '#856404' : '#0c5460'
+							color: isRecording ? '#856404' : (audioRef.current?.paused !== false ? '#721c24' : '#0c5460')
 						}}>
 							<div style={{fontWeight: 'bold', marginBottom: '0.25rem'}}>
-								{isRecording ? '🔴 Recording...' : '⏸️ Ready to Record'}
+								{isRecording ? '🔴 Recording...' : 
+									(audioRef.current?.paused !== false ? '⏸️ Music Paused - Cannot Record' : '✅ Ready to Record')}
 							</div>
 							<div style={{fontSize: '0.8rem'}}>
 								{isRecording 
-									? `Hold W key to continue recording` 
-									: `Press and hold W key to start recording`
+									? `Release W key to finish recording token ${activeTokenIndex + 1}` 
+									: (audioRef.current?.paused !== false 
+										? 'Play the music first to start recording'
+										: `Press and hold W key to record token ${activeTokenIndex + 1}`
+									)
 								}
 							</div>
+							{audioRef.current?.paused === false && (
+								<div style={{fontSize: '0.75rem', marginTop: '0.5rem', opacity: 0.8}}>
+									Mode: {recordingMode} | Voice: {voices.find(v => v.id === currentVoice)?.name || `Voice ${currentVoice}`}
+								</div>
+							)}
 						</div>
 					</div>
 					
-					{/* Voice Management */}
+					{/* Voice Management - Foldable */}
 					<div style={{marginBottom: '2rem'}}>
-						<h4 style={{marginBottom: '1rem', color: '#333'}}>Voices</h4>
+						<button
+							onClick={() => setVoicesExpanded(!voicesExpanded)}
+							style={{
+								width: '100%',
+								display: 'flex',
+								alignItems: 'center',
+								justifyContent: 'space-between',
+								padding: '12px',
+								background: '#f8f9fa',
+								border: '1px solid #ddd',
+								borderRadius: '8px',
+								cursor: 'pointer',
+								fontSize: '1rem',
+								color: '#333',
+								fontWeight: '600',
+								marginBottom: voicesExpanded ? '1rem' : '0'
+							}}
+						>
+							<span>🎭 Voices ({voices.length})</span>
+							<span style={{transform: voicesExpanded ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s'}}>
+								▼
+							</span>
+						</button>
 						
+						{voicesExpanded && (
+						<>
 						{voices.map(voice => (
 							<div key={voice.id} style={{
 								marginBottom: '1rem',
@@ -900,6 +1174,9 @@ function TimingSyncPage() {
 						>
 							+ Add Voice
 						</button>
+						
+						</>
+						)}
 					</div>
 					
 					{/* Current Voice Selector */}
@@ -940,25 +1217,9 @@ function TimingSyncPage() {
 						</div>
 					</div>
 					
-					{/* Recording Controls */}
+					{/* Keyboard Controls Help */}
 					<div style={{marginBottom: '2rem'}}>
-						<h4 style={{marginBottom: '1rem', color: '#333'}}>Recording</h4>
-						<button
-							style={{
-								width: '100%',
-								padding: '16px',
-								borderRadius: '8px',
-								background: '#28a745',
-								color: 'white',
-								border: 'none',
-								cursor: 'pointer',
-								fontSize: '1.2rem',
-								fontWeight: 'bold',
-								marginBottom: '1rem'
-							}}
-						>
-							🎤 Start Recording {recordingMode}
-						</button>
+						<h4 style={{marginBottom: '1rem', color: '#333'}}>Controls</h4>
 						
 						{/* Keyboard controls help */}
 						<div style={{
@@ -971,13 +1232,13 @@ function TimingSyncPage() {
 							<div style={{marginBottom: '0.5rem'}}>
 								<strong>Controls:</strong>
 							</div>
-							<div>• Press <kbd style={{
+							<div>• Hold <kbd style={{
 								background: '#e9ecef',
 								padding: '2px 6px',
 								borderRadius: '3px',
 								fontFamily: 'monospace',
 								fontSize: '0.8rem'
-							}}>W</kbd> to advance to next {recordingMode.slice(0, -1)}</div>
+							}}>W</kbd> to record token timing (while music plays)</div>
 							<div>• Use <kbd style={{
 								background: '#e9ecef',
 								padding: '2px 6px',
@@ -990,8 +1251,28 @@ function TimingSyncPage() {
 								borderRadius: '3px',
 								fontFamily: 'monospace',
 								fontSize: '0.8rem'
-							}}>→</kbd> to navigate manually
-							</div>
+							}}>→</kbd> to navigate within {recordingMode}</div>
+							<div>• Use <kbd style={{
+								background: '#e9ecef',
+								padding: '2px 6px',
+								borderRadius: '3px',
+								fontFamily: 'monospace',
+								fontSize: '0.8rem'
+							}}>Ctrl+←</kbd> <kbd style={{
+								background: '#e9ecef',
+								padding: '2px 6px',
+								borderRadius: '3px',
+								fontFamily: 'monospace',
+								fontSize: '0.8rem'
+							}}>Ctrl+→</kbd> to navigate parent level</div>
+							<div>• Press <kbd style={{
+								background: '#e9ecef',
+								padding: '2px 6px',
+								borderRadius: '3px',
+								fontFamily: 'monospace',
+								fontSize: '0.8rem'
+							}}>Space</kbd> to play/pause audio</div>
+							<div>• Click progress bar to seek (when paused and W not pressed)</div>
 						</div>
 					</div>
 					
@@ -1061,7 +1342,7 @@ function TimingSyncPage() {
 				{/* Play Controls */}
 				<div style={{display: 'flex', alignItems: 'center', gap: '1rem'}}>
 					<button
-						onClick={handlePlayPause}
+						onClick={togglePlayPause}
 						style={{
 							width: '50px',
 							height: '50px',
@@ -1092,9 +1373,11 @@ function TimingSyncPage() {
 							height: '8px',
 							borderRadius: '4px',
 							position: 'relative',
-							cursor: 'pointer'
+							cursor: (!wKeyPressedRef.current && audioRef.current?.paused) ? 'pointer' : 'not-allowed',
+							opacity: (!wKeyPressedRef.current && audioRef.current?.paused) ? 1 : 0.6
 						}}
 						onClick={handleSeek}
+						title={(!wKeyPressedRef.current && audioRef.current?.paused) ? 'Click to seek' : 'Pause playback and release W key to seek'}
 					>
 						<div style={{
 							background: '#667eea',
