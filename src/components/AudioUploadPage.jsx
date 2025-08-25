@@ -144,7 +144,7 @@ function AudioUploadPage() {
 	
 	return (
 		<div style={{
-			minHeight: 'calc(100vh - 80px)', // Account for 80px header
+			minHeight: 'calc(100vh - 48px)', // Account for 48px header
 			background: 'linear-gradient(135deg, #667eea 0%, #764ba2 100%)',
 			padding: '2rem 0'
 		}}>

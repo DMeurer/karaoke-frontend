@@ -16,6 +16,8 @@ import HomePage from './components/HomePage'
 import AudioUploadPage from './components/AudioUploadPage'
 import LyricsInputPage from './components/LyricsInputPage'
 import TimingSyncPage from './components/TimingSyncPage'
+import LyricsPlaybackScreen from './components/LyricsPlaybackScreen'
+import LibraryPage from './components/LibraryPage'
 
 function App() {
 	// Sidebar visibility state
@@ -41,14 +43,16 @@ function App() {
 			
 			{/* Main content area with routing */}
 			<main style={{
-				marginTop: '80px', // Account for fixed header (80px height)
-				minHeight: 'calc(100vh - 80px)' // Fill remaining viewport height
+				marginTop: '48px', // Account for fixed header (now 48px height)
+				minHeight: 'calc(100vh - 48px)' // Fill remaining viewport height
 			}}>
 				<Routes>
 					<Route path="/" element={<HomePage/>}/>
 					<Route path="/audio-upload" element={<AudioUploadPage/>}/>
 					<Route path="/lyrics-input" element={<LyricsInputPage/>}/>
 					<Route path="/timing-sync" element={<TimingSyncPage/>}/>
+					<Route path="/playback" element={<LyricsPlaybackScreen/>}/>
+					<Route path="/library" element={<LibraryPage/>}/>
 				</Routes>
 			</main>
 		</div>

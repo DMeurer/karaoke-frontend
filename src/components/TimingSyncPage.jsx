@@ -14,10 +14,11 @@
  */
 
 import React, {useState, useRef, useEffect} from 'react'
-import {useLocation} from 'react-router-dom'
+import {useLocation, useNavigate} from 'react-router-dom'
 
 function TimingSyncPage() {
 	const location = useLocation()
+	const navigate = useNavigate();
 	const audioFile = location.state?.audioFile
 	const initialKaraokeData = location.state?.karaokeData
 	
@@ -736,7 +737,7 @@ function TimingSyncPage() {
 	
 	return (
 		<div style={{
-			height: 'calc(100vh - 80px)',
+			height: 'calc(100vh - 48px)', // Updated for new header height
 			display: 'flex',
 			flexDirection: 'column',
 			background: '#f5f5f5'
@@ -746,7 +747,7 @@ function TimingSyncPage() {
 				flex: 1,
 				flexGrow: 0,
 				display: 'flex',
-				height: 'calc(100vh - 160px)', // Account for header (80px) + footer (80px) = 160px
+				height: 'calc(100vh - 128px)', // 48px header + 80px footer
 				boxSizing: 'border-box' // Include padding in height calculation
 			}}>
 				{/* Left - Lyrics Preview (16:9 aspect ratio) */}
@@ -1307,6 +1308,40 @@ function TimingSyncPage() {
 							textAlign: 'center'
 						}}>
 							This will download your complete karaoke file with all timing data
+						</div>
+					</div>
+					
+					{/* Playback Navigation */}
+					<div style={{marginTop: '2rem', paddingTop: '2rem', borderTop: '1px solid #ddd'}}>
+						<h4 style={{marginBottom: '1rem', color: '#333'}}>Playback</h4>
+						<button
+							onClick={() => navigate('/playback', { state: { lyricsJson: karaokeData, audioUrl } })}
+							style={{
+								width: '100%',
+								padding: '16px',
+								borderRadius: '8px',
+								background: '#28a745',
+								color: 'white',
+								border: 'none',
+								cursor: 'pointer',
+								fontSize: '1.1rem',
+								fontWeight: 'bold',
+								marginBottom: '1rem'
+							}}
+							onMouseEnter={(e) => e.target.style.background = '#218838'}
+							onMouseLeave={(e) => e.target.style.background = '#28a745'}
+						>
+							▶️ Preview Karaoke Playback
+						</button>
+						<div style={{
+							padding: '0.75rem',
+							background: '#f8f9fa',
+							borderRadius: '6px',
+							fontSize: '0.8rem',
+							color: '#666',
+							textAlign: 'center'
+						}}>
+							Preview your karaoke timing and highlighting as it will appear to users
 						</div>
 					</div>
 				</div>

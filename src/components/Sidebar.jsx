@@ -19,11 +19,9 @@ function Sidebar({isOpen, onClose}) {
 	// Navigation menu items with updated paths
 	const menuItems = [
 		{path: '/', label: 'Home', icon: '🏠'},
-		{path: '/audio-upload', label: 'Upload Audio', icon: '🎵'},
-		{path: '/lyrics-input', label: 'Add Lyrics', icon: '📝'},
-		{path: '/timing-sync', label: 'Sync Timing', icon: '🎤'},
-		{path: '/library', label: 'My Library', icon: '📚'},
-		{path: '/settings', label: 'Settings', icon: '⚙️'}
+		{path: '/audio-upload', label: 'Create Track', icon: '🎵'},
+		{path: '/playback', label: 'Play Track', icon: '▶️'},
+		{path: '/library', label: 'Library', icon: '📚'}
 	]
 	
 	const isActive = (path) => location.pathname === path

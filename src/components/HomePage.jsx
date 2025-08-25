@@ -10,12 +10,14 @@
  */
 
 import React from 'react'
-import {Link} from 'react-router-dom'
+import {Link, useNavigate} from 'react-router-dom'
 
 function HomePage() {
+	const navigate = useNavigate();
+
 	return (
 		<div style={{
-			minHeight: 'calc(100vh - 80px)', // Account for 80px header
+			minHeight: 'calc(100vh - 48px)', // Account for 48px header
 			display: 'flex',
 			flexDirection: 'column',
 			alignItems: 'center',
@@ -58,6 +60,20 @@ function HomePage() {
 							Create New Karaoke File
 						</button>
 					</Link>
+					<button
+						style={{
+							fontSize: '1.2rem',
+							padding: '16px 32px',
+							background: 'rgba(255,255,255,0.2)',
+							border: '2px solid white',
+							color: 'white',
+							borderRadius: '50px',
+							backdropFilter: 'blur(10px)'
+						}}
+						onClick={() => navigate('/playback')}
+					>
+						▶️ Karaoke Playback
+					</button>
 				</div>
 				
 				{/* Feature highlights grid */}
