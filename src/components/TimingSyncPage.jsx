@@ -177,6 +177,36 @@ function TimingSyncPage() {
 		const cleanedData = JSON.parse(JSON.stringify(data)) // Deep copy
 
 		cleanedData.blocks.forEach(block => {
+			// Clean up lines within blocks first
+			if (block.lines && Array.isArray(block.lines)) {
+				const timedLines = block.lines.filter(line => 
+					typeof line.start === 'number' && typeof line.end === 'number' && 
+					(line.start !== 0 || line.end !== 0)
+				)
+
+				if (timedLines.length === 0) {
+					// No lines have timing - this shouldn't happen for blocks, but handle it
+					// Keep the lines but they'll have no timing data
+				} else if (timedLines.length < block.lines.length) {
+					// Some lines have timing - use linear distribution for all lines
+					const totalDuration = block.end - block.start
+					const tokenCount = block.lines.length
+					const tokenDuration = totalDuration / tokenCount
+					
+					block.lines = block.lines.map((line, index) => {
+						const startTime = block.start + (index * tokenDuration)
+						const endTime = block.start + ((index + 1) * tokenDuration)
+						
+						return {
+							...line,
+							start: Math.round(startTime),
+							end: Math.round(endTime),
+							voice: line.voice || block.voice // Inherit parent voice
+						}
+					})
+				}
+			}
+
 			block.lines.forEach(line => {
 				// Clean up words
 				if (line.words && Array.isArray(line.words)) {
@@ -189,70 +219,22 @@ function TimingSyncPage() {
 						// No words have timing - remove all word data
 						delete line.words
 					} else if (timedWords.length < line.words.length) {
-						// Some words have timing - interpolate missing ones
-						const interpolatedWords = []
+						// Some words have timing - use linear distribution for all words
+						const totalDuration = line.end - line.start
+						const tokenCount = line.words.length
+						const tokenDuration = totalDuration / tokenCount
 						
-						for (let i = 0; i < line.words.length; i++) {
-							const word = line.words[i]
+						const interpolatedWords = line.words.map((word, index) => {
+							const startTime = line.start + (index * tokenDuration)
+							const endTime = line.start + ((index + 1) * tokenDuration)
 							
-							if (typeof word.start === 'number' && typeof word.end === 'number' && 
-								(word.start !== 0 || word.end !== 0)) {
-								// Word has timing data
-								interpolatedWords.push(word)
-							} else {
-								// Word needs interpolated timing
-								let startTime, endTime
-								
-								// Find previous timed word
-								let prevWord = null
-								for (let j = i - 1; j >= 0; j--) {
-									const candidate = line.words[j]
-									if (typeof candidate.start === 'number' && typeof candidate.end === 'number' && 
-										(candidate.start !== 0 || candidate.end !== 0)) {
-										prevWord = candidate
-										break
-									}
-								}
-								
-								// Find next timed word
-								let nextWord = null
-								for (let j = i + 1; j < line.words.length; j++) {
-									const candidate = line.words[j]
-									if (typeof candidate.start === 'number' && typeof candidate.end === 'number' && 
-										(candidate.start !== 0 || candidate.end !== 0)) {
-										nextWord = candidate
-										break
-									}
-								}
-								
-								if (prevWord && nextWord) {
-									// Interpolate between previous and next
-									const totalGap = nextWord.start - prevWord.end
-									const wordsInGap = 1 // This word
-									const timePerWord = totalGap / (wordsInGap + 1)
-									startTime = prevWord.end + timePerWord
-									endTime = startTime + timePerWord
-								} else if (prevWord) {
-									// Use parent end time
-									startTime = prevWord.end
-									endTime = line.end || (startTime + 1000) // 1 second default
-								} else if (nextWord) {
-									// Use parent start time
-									endTime = nextWord.start
-									startTime = line.start || (endTime - 1000) // 1 second default
-								} else {
-									// Fallback to parent timing
-									startTime = line.start || 0
-									endTime = line.end || (startTime + 1000)
-								}
-								
-								interpolatedWords.push({
-									...word,
-									start: Math.round(startTime),
-									end: Math.round(endTime)
-								})
+							return {
+								...word,
+								start: Math.round(startTime),
+								end: Math.round(endTime),
+								voice: word.voice || line.voice // Inherit parent voice
 							}
-						}
+						})
 						
 						line.words = interpolatedWords
 					}
@@ -270,71 +252,22 @@ function TimingSyncPage() {
 									// No chars have timing - remove all char data
 									delete word.chars
 								} else if (timedChars.length < word.chars.length) {
-									// Some chars have timing - interpolate missing ones
-									const interpolatedChars = []
+									// Some chars have timing - use linear distribution for all chars
+									const totalDuration = word.end - word.start
+									const tokenCount = word.chars.length
+									const tokenDuration = totalDuration / tokenCount
 									
-									for (let i = 0; i < word.chars.length; i++) {
-										const char = word.chars[i]
+									const interpolatedChars = word.chars.map((char, index) => {
+										const startTime = word.start + (index * tokenDuration)
+										const endTime = word.start + ((index + 1) * tokenDuration)
 										
-										if (typeof char.start === 'number' && typeof char.end === 'number' && 
-											(char.start !== 0 || char.end !== 0)) {
-											// Char has timing data
-											interpolatedChars.push(char)
-										} else {
-											// Char needs interpolated timing
-											let startTime, endTime
-											
-											// Find previous timed char
-											let prevChar = null
-											for (let j = i - 1; j >= 0; j--) {
-												const candidate = word.chars[j]
-												if (typeof candidate.start === 'number' && typeof candidate.end === 'number' && 
-													(candidate.start !== 0 || candidate.end !== 0)) {
-													prevChar = candidate
-													break
-												}
-											}
-											
-											// Find next timed char
-											let nextChar = null
-											for (let j = i + 1; j < word.chars.length; j++) {
-												const candidate = word.chars[j]
-												if (typeof candidate.start === 'number' && typeof candidate.end === 'number' && 
-													(candidate.start !== 0 || candidate.end !== 0)) {
-													nextChar = candidate
-													break
-												}
-											}
-											
-											if (prevChar && nextChar) {
-												// Interpolate between previous and next
-												const totalGap = nextChar.start - prevChar.end
-												const charsInGap = 1 // This char
-												const timePerChar = totalGap / (charsInGap + 1)
-												startTime = prevChar.end + timePerChar
-												endTime = startTime + timePerChar
-											} else if (prevChar) {
-												// Use word end time
-												startTime = prevChar.end
-												endTime = word.end || (startTime + 100) // 100ms default
-											} else if (nextChar) {
-												// Use word start time
-												endTime = nextChar.start
-												startTime = word.start || (endTime - 100) // 100ms default
-											} else {
-												// Fallback to word timing
-												const charDuration = (word.end - word.start) / word.chars.length
-												startTime = word.start + (i * charDuration)
-												endTime = startTime + charDuration
-											}
-											
-											interpolatedChars.push({
-												...char,
-												start: Math.round(startTime),
-												end: Math.round(endTime)
-											})
+										return {
+											...char,
+											start: Math.round(startTime),
+											end: Math.round(endTime),
+											voice: char.voice || word.voice || line.voice // Inherit parent voice
 										}
-									}
+									})
 									
 									word.chars = interpolatedChars
 								}
@@ -553,10 +486,19 @@ function TimingSyncPage() {
 		if (activeTokenIndex >= tokens.length) return false
 		
 		const currentToken = tokens[activeTokenIndex]
-		return currentToken && 
+		const hasValidTiming = currentToken && 
 			   typeof currentToken.start === 'number' && 
 			   typeof currentToken.end === 'number' &&
 			   currentToken.start > 0 && currentToken.end > 0
+		
+		console.log('Checking current token recorded:', {
+			recordingMode,
+			activeTokenIndex,
+			currentToken,
+			hasValidTiming
+		})
+		
+		return hasValidTiming
 	}
 	
 	/**
@@ -579,11 +521,19 @@ function TimingSyncPage() {
 		const currentModeIndex = modes.indexOf(recordingMode)
 		if (currentModeIndex >= 0 && currentModeIndex < modes.length - 1) {
 			const nextMode = modes[currentModeIndex + 1]
-			if (isCurrentTokenRecorded() && !newUnlockedModes.includes(nextMode)) {
+			const tokenRecorded = isCurrentTokenRecorded()
+			if (tokenRecorded && !newUnlockedModes.includes(nextMode)) {
 				newUnlockedModes.push(nextMode)
+				console.log(`Unlocking ${nextMode} mode because current ${recordingMode} token is recorded`)
 			}
 		}
 		
+		// Always ensure the current recording mode is unlocked
+		if (!newUnlockedModes.includes(recordingMode)) {
+			newUnlockedModes.push(recordingMode)
+		}
+		
+		console.log('Updated unlocked modes:', newUnlockedModes)
 		setUnlockedModes(newUnlockedModes)
 	}
 	
@@ -1049,21 +999,23 @@ function TimingSyncPage() {
 								})
 							})
 						} else {
-							// Fallback: split line text into words
-							const lineWords = line.text.split(' ').filter(word => word.trim())
-							lineWords.forEach((word, wordIndex) => {
-								words.push({
-									type: 'word',
-									index: words.length,
-									text: word,
-									voice: line.voice,
-									blockIndex,
-									lineIndex,
-									wordIndex,
-									lineText: line.text,
-									start: undefined, // No timing data available
-									end: undefined
-								})
+							// Fallback: split line text into words and spaces
+							const tokens = line.text.split(/( )/g) // Splits into words and spaces
+							tokens.forEach((token, tokenIndex) => {
+								if (token.length > 0) { // Skip empty strings
+									words.push({
+										type: 'word',
+										index: words.length,
+										text: token,
+										voice: line.voice,
+										blockIndex,
+										lineIndex,
+										wordIndex: tokenIndex,
+										lineText: line.text,
+										start: undefined, // No timing data available
+										end: undefined
+									})
+								}
 							})
 						}
 					})

@@ -11,7 +11,7 @@
  * - Navigation to timing sync page
  */
 
-import React, {useState, useRef} from 'react'
+import React, {useRef, useState} from 'react'
 import {useLocation, useNavigate} from 'react-router-dom'
 
 function LyricsInputPage() {
@@ -182,13 +182,17 @@ function LyricsInputPage() {
 						end: 0,
 						voice: 0, // 0 = undefined, will be set during recording
 						position: "",
-						words: lineText.split(' ').filter(word => word.trim()).map((wordText) => ({
+						words: (() => {
+							return lineText.split(/( )/g).filter(word => word.length > 0)
+						})().map((wordText) => ({
 							text: wordText,
 							start: 0, // Initialize all timestamps to 0
 							end: 0,
 							voice: 0, // 0 = undefined, will be set during recording
 							position: "",
-							chars: wordText.split('').map((charText) => ({
+							chars: (() => {
+								return wordText.split('')
+							})().map((charText) => ({
 								text: charText,
 								start: 0, // Initialize all timestamps to 0
 								end: 0,
