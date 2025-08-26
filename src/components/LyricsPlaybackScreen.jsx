@@ -22,6 +22,20 @@ function LyricsPlaybackScreen() {
 	const [audioUrl, setAudioUrl] = useState(location.state?.audioUrl)
 	const [uploadMode, setUploadMode] = useState(false)
 	
+	// Handle audioFile from navigation (create blob URL)
+	useEffect(() => {
+		const audioFile = location.state?.audioFile
+		if (audioFile && !location.state?.audioUrl) {
+			console.log('Creating blob URL for audio file:', audioFile.name)
+			const url = URL.createObjectURL(audioFile)
+			setAudioUrl(url)
+			
+			return () => {
+				URL.revokeObjectURL(url)
+			}
+		}
+	}, [location.state?.audioFile, location.state?.audioUrl])
+	
 	// Audio playback state
 	const [isPlaying, setIsPlaying] = useState(false)
 	const [currentTime, setCurrentTime] = useState(0)

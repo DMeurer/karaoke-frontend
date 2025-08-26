@@ -41,7 +41,7 @@ function TimingSyncPage() {
 	const [isRecording, setIsRecording] = useState(false)
 	const [recordingStartTime, setRecordingStartTime] = useState(null)
 	const [wKeyPressed, setWKeyPressed] = useState(false)
-	const [unlockedModes, setUnlockedModes] = useState(['blocks']) // Start with only blocks unlocked
+	const [unlockedModes, setUnlockedModes] = useState(['blocks', 'lines']) // Start with blocks and lines unlocked
 	const [voicesExpanded, setVoicesExpanded] = useState(false) // Voice section collapsed by default
 	const [syncLocked, setSyncLocked] = useState(false) // Token-playhead sync lock
 	const wKeyPressedRef = useRef(false) // Use ref for immediate state tracking
@@ -304,6 +304,153 @@ function TimingSyncPage() {
 
 		return cleanedData
 	}
+	
+	/**
+	 * Check if a token is a space token (should be skipped during recording)
+	 */
+	const isSpaceToken = (token) => {
+		return token && token.text && token.text.trim() === ''
+	}
+	
+	/**
+	 * Find the first non-space token index for the given tokens array
+	 */
+	const findFirstNonSpaceTokenIndex = (tokens) => {
+		for (let i = 0; i < tokens.length; i++) {
+			if (!isSpaceToken(tokens[i])) {
+				return i
+			}
+		}
+		return 0 // Fallback to 0 if no non-space tokens found
+	}
+	
+	/**
+	 * Update block timing based on child lines timing
+	 * Called when recording lines to ensure parent blocks are updated
+	 */
+	const updateBlockTimingFromLines = (updatedData) => {
+		updatedData.blocks.forEach(block => {
+			if (!block.lines || block.lines.length === 0) return
+			
+			// Get all lines with valid timing
+			const timedLines = block.lines.filter(line => 
+				typeof line.start === 'number' && typeof line.end === 'number' && 
+				line.start > 0 && line.end > 0
+			)
+			
+			if (timedLines.length === 0) return
+			
+			// Calculate block timing from children
+			const lineStarts = timedLines.map(line => line.start)
+			const lineEnds = timedLines.map(line => line.end)
+			const blockStart = Math.min(...lineStarts)
+			const blockEnd = Math.max(...lineEnds)
+			
+			// Update block timing if not recorded or out of bounds
+			const shouldUpdateStart = !block.start || block.start === 0 || block.start > blockStart
+			const shouldUpdateEnd = !block.end || block.end === 0 || block.end < blockEnd
+			
+			if (shouldUpdateStart) {
+				block.start = blockStart
+				console.log(`📦 Updated block start to ${blockStart}ms based on child lines`)
+			}
+			
+			if (shouldUpdateEnd) {
+				block.end = blockEnd
+				console.log(`📦 Updated block end to ${blockEnd}ms based on child lines`)
+			}
+		})
+	}
+	
+	/**
+	 * Update line and block timing based on child words timing
+	 * Called when recording words to ensure parent lines and blocks are updated
+	 */
+	const updateParentTimingFromWords = (updatedData) => {
+		updatedData.blocks.forEach(block => {
+			block.lines.forEach(line => {
+				if (!line.words || line.words.length === 0) return
+				
+				// Get all words with valid timing
+				const timedWords = line.words.filter(word => 
+					typeof word.start === 'number' && typeof word.end === 'number' && 
+					word.start > 0 && word.end > 0
+				)
+				
+				if (timedWords.length === 0) return
+				
+				// Calculate line timing from children
+				const wordStarts = timedWords.map(word => word.start)
+				const wordEnds = timedWords.map(word => word.end)
+				const lineStart = Math.min(...wordStarts)
+				const lineEnd = Math.max(...wordEnds)
+				
+				// Update line timing if not recorded or out of bounds
+				const shouldUpdateStart = !line.start || line.start === 0 || line.start > lineStart
+				const shouldUpdateEnd = !line.end || line.end === 0 || line.end < lineEnd
+				
+				if (shouldUpdateStart) {
+					line.start = lineStart
+					console.log(`📝 Updated line start to ${lineStart}ms based on child words`)
+				}
+				
+				if (shouldUpdateEnd) {
+					line.end = lineEnd
+					console.log(`📝 Updated line end to ${lineEnd}ms based on child words`)
+				}
+			})
+		})
+		
+		// Also update blocks based on updated lines
+		updateBlockTimingFromLines(updatedData)
+	}
+	
+	/**
+	 * Update word, line and block timing based on child characters timing
+	 * Called when recording characters to ensure parent words, lines and blocks are updated
+	 */
+	const updateParentTimingFromChars = (updatedData) => {
+		updatedData.blocks.forEach(block => {
+			block.lines.forEach(line => {
+				if (!line.words || line.words.length === 0) return
+				
+				line.words.forEach(word => {
+					if (!word.chars || word.chars.length === 0) return
+					
+					// Get all characters with valid timing
+					const timedChars = word.chars.filter(char => 
+						typeof char.start === 'number' && typeof char.end === 'number' && 
+						char.start > 0 && char.end > 0
+					)
+					
+					if (timedChars.length === 0) return
+					
+					// Calculate word timing from children
+					const charStarts = timedChars.map(char => char.start)
+					const charEnds = timedChars.map(char => char.end)
+					const wordStart = Math.min(...charStarts)
+					const wordEnd = Math.max(...charEnds)
+					
+					// Update word timing if not recorded or out of bounds
+					const shouldUpdateStart = !word.start || word.start === 0 || word.start > wordStart
+					const shouldUpdateEnd = !word.end || word.end === 0 || word.end < wordEnd
+					
+					if (shouldUpdateStart) {
+						word.start = wordStart
+						console.log(`🔤 Updated word start to ${wordStart}ms based on child characters`)
+					}
+					
+					if (shouldUpdateEnd) {
+						word.end = wordEnd
+						console.log(`🔤 Updated word end to ${wordEnd}ms based on child characters`)
+					}
+				})
+			})
+		})
+		
+		// Also update lines and blocks based on updated words
+		updateParentTimingFromWords(updatedData)
+	}
 
 	/**
 	 * Record timestamp for current active token
@@ -322,40 +469,48 @@ function TimingSyncPage() {
 	}
 	
 	/**
-	 * Skip to previous token
+	 * Skip to previous non-space token
 	 */
 	const goToPreviousToken = () => {
-		if (activeTokenIndex > 0) {
-			const newIndex = activeTokenIndex - 1
+		const tokens = getTokensByMode()
+		let newIndex = activeTokenIndex - 1
+		
+		// Skip over space tokens
+		while (newIndex >= 0 && isSpaceToken(tokens[newIndex])) {
+			newIndex--
+		}
+		
+		if (newIndex >= 0) {
 			setActiveTokenIndex(newIndex)
+			console.log(`⬅️ Moved to previous non-space token at index ${newIndex}: "${tokens[newIndex].text}"`)
 			
 			// If sync is locked, jump playhead to this token's start time
 			if (syncLocked && audioRef.current) {
-				const tokens = getTokensByMode()
-				if (tokens[newIndex]) {
-					const token = tokens[newIndex]
-					console.log('Previous token for sync:', token, 'start:', token.start)
-					const tokenStartTime = token.start / 1000 // Convert to seconds
-					console.log('Calculated start time (previous):', tokenStartTime)
-					if (typeof tokenStartTime === 'number' && isFinite(tokenStartTime) && tokenStartTime >= 0) {
-						console.log('Setting currentTime to (previous):', tokenStartTime)
-						audioRef.current.currentTime = tokenStartTime
-						setCurrentTime(tokenStartTime)
-					} else {
-						console.log('Invalid token start time (previous):', tokenStartTime)
-					}
+				const token = tokens[newIndex]
+				const tokenStartTime = token.start / 1000 // Convert to seconds
+				if (typeof tokenStartTime === 'number' && isFinite(tokenStartTime) && tokenStartTime >= 0) {
+					audioRef.current.currentTime = tokenStartTime
+					setCurrentTime(tokenStartTime)
 				}
 			}
 		}
 	}
 	
 	/**
-	 * Skip to next token
+	 * Skip to next non-space token
 	 */
 	const goToNextToken = () => {
 		const tokens = getTokensByMode()
-		if (activeTokenIndex < tokens.length - 1) {
-			setActiveTokenIndex(prev => prev + 1)
+		let newIndex = activeTokenIndex + 1
+		
+		// Skip over space tokens
+		while (newIndex < tokens.length && isSpaceToken(tokens[newIndex])) {
+			newIndex++
+		}
+		
+		if (newIndex < tokens.length) {
+			setActiveTokenIndex(newIndex)
+			console.log(`➡️ Moved to next non-space token at index ${newIndex}: "${tokens[newIndex].text}"`)
 		}
 	}
 	
@@ -506,12 +661,14 @@ function TimingSyncPage() {
 	 */
 	const updateUnlockedModes = () => {
 		const modes = ['blocks', 'lines', 'words', 'chars']
-		const newUnlockedModes = ['blocks'] // Always start with blocks
+		const newUnlockedModes = ['blocks', 'lines'] // Always start with blocks and lines
 		
-		// Traditional completion-based unlocking
-		for (let i = 0; i < modes.length - 1; i++) {
+		// Traditional completion-based unlocking (start from lines since blocks and lines are always unlocked)
+		for (let i = 1; i < modes.length - 1; i++) {
 			if (isModeCompleted(modes[i])) {
-				newUnlockedModes.push(modes[i + 1])
+				if (!newUnlockedModes.includes(modes[i + 1])) {
+					newUnlockedModes.push(modes[i + 1])
+				}
 			} else {
 				break
 			}
@@ -575,6 +732,16 @@ function TimingSyncPage() {
 		
 		const currentTime = Math.round(timestamp * 1000) // Convert to milliseconds
 		
+		// Skip space tokens - they are not recorded
+		const tokens = getTokensByMode()
+		const currentToken = tokens[activeTokenIndex]
+		if (isSpaceToken(currentToken)) {
+			console.log(`🚫 Skipping recording for space token at index ${activeTokenIndex}`)
+			return
+		}
+		
+		console.log(`🎯 Recording ${type} for token at index ${activeTokenIndex}: "${currentToken.text}"`)
+		
 		// Update the karaoke data structure based on current recording mode
 		const updatedData = { ...karaokeData }
 		
@@ -596,11 +763,14 @@ function TimingSyncPage() {
 					if (type === 'start') {
 						allLines[activeTokenIndex].voice = currentVoice
 					}
+					
+					// Update parent block timing based on child lines
+					updateBlockTimingFromLines(updatedData)
 				}
 				break
 			case 'words':
 				const allWords = updatedData.blocks.flatMap(block => 
-					block.lines.flatMap(line => line.words)
+					block.lines.flatMap(line => line.words || [])
 				)
 				if (activeTokenIndex < allWords.length) {
 					allWords[activeTokenIndex][type] = currentTime
@@ -608,12 +778,15 @@ function TimingSyncPage() {
 					if (type === 'start') {
 						allWords[activeTokenIndex].voice = currentVoice
 					}
+					
+					// Update parent line and block timing based on child words
+					updateParentTimingFromWords(updatedData)
 				}
 				break
 			case 'chars':
 				const allChars = updatedData.blocks.flatMap(block => 
 					block.lines.flatMap(line => 
-						line.words.flatMap(word => word.chars || [])
+						line.words ? line.words.flatMap(word => word.chars || []) : []
 					)
 				)
 				if (activeTokenIndex < allChars.length) {
@@ -622,6 +795,9 @@ function TimingSyncPage() {
 					if (type === 'start') {
 						allChars[activeTokenIndex].voice = currentVoice
 					}
+					
+					// Update parent word, line and block timing based on child characters
+					updateParentTimingFromChars(updatedData)
 				}
 				break
 		}
@@ -696,10 +872,18 @@ function TimingSyncPage() {
 					setRecordingStartTime(null)
 					console.log('Ended recording at:', audioRef.current.currentTime, 's')
 					
-					// Advance to next token
+					// Advance to next non-space token
 					const tokens = getTokensByMode()
-					if (activeTokenIndex < tokens.length - 1) {
-						setActiveTokenIndex(prev => prev + 1)
+					let nextIndex = activeTokenIndex + 1
+					
+					// Skip over space tokens
+					while (nextIndex < tokens.length && isSpaceToken(tokens[nextIndex])) {
+						nextIndex++
+					}
+					
+					if (nextIndex < tokens.length) {
+						setActiveTokenIndex(nextIndex)
+						console.log(`🎯 Advanced to next non-space token at index ${nextIndex}: "${tokens[nextIndex].text}"`)
 					} else {
 						// Finished current mode - ask user if they want to proceed to next mode
 						console.log(`Finished recording ${recordingMode} mode`)
@@ -708,8 +892,11 @@ function TimingSyncPage() {
 							const proceed = confirm(`Finished ${recordingMode} mode. Proceed to ${nextMode} mode for fine-tuning?`)
 							if (proceed) {
 								setRecordingMode(nextMode)
-								setActiveTokenIndex(0)
-								console.log(`Switched to ${nextMode} mode`)
+								// Find first non-space token for the new mode
+								const nextModeTokens = getTokensByModeType(nextMode)
+								const firstNonSpaceIndex = findFirstNonSpaceTokenIndex(nextModeTokens)
+								setActiveTokenIndex(firstNonSpaceIndex)
+								console.log(`Switched to ${nextMode} mode, starting at non-space token index ${firstNonSpaceIndex}`)
 							}
 						} else {
 							alert(`Congratulations! You've finished all recording modes. Your karaoke file is ready!`)
@@ -1091,6 +1278,7 @@ function TimingSyncPage() {
 	/**
 	 * Get tokens to display based on recording mode and active token
 	 * Different modes show different context around the active token
+	 * Space tokens are filtered out from display
 	 */
 	const getDisplayTokens = () => {
 		const tokens = getTokensByMode()
@@ -1100,57 +1288,63 @@ function TimingSyncPage() {
 		
 		switch (recordingMode) {
 			case 'blocks':
-				// Show 1 above and 1 below
+				// Show 1 above and 1 below (filter out spaces)
 				const blockStart = Math.max(0, activeIndex - 1)
 				const blockEnd = Math.min(tokens.length, activeIndex + 2)
-				return tokens.slice(blockStart, blockEnd).map((token, index) => ({
-					...token,
-					isActive: blockStart + index === activeIndex,
-					displayIndex: blockStart + index
-				}))
+				return tokens.slice(blockStart, blockEnd)
+					.filter(token => !isSpaceToken(token))
+					.map((token, index) => ({
+						...token,
+						isActive: tokens.indexOf(token) === activeIndex,
+						displayIndex: tokens.indexOf(token)
+					}))
 			
 			case 'lines':
-				// Show 2 above and 2 below
+				// Show 2 above and 2 below (filter out spaces)
 				const lineStart = Math.max(0, activeIndex - 2)
 				const lineEnd = Math.min(tokens.length, activeIndex + 3)
-				return tokens.slice(lineStart, lineEnd).map((token, index) => ({
-					...token,
-					isActive: lineStart + index === activeIndex,
-					displayIndex: lineStart + index
-				}))
+				return tokens.slice(lineStart, lineEnd)
+					.filter(token => !isSpaceToken(token))
+					.map((token, index) => ({
+						...token,
+						isActive: tokens.indexOf(token) === activeIndex,
+						displayIndex: tokens.indexOf(token)
+					}))
 			
 			case 'words':
-				// Show current line + 1 above and 1 below
+				// Show current line + 1 above and 1 below (filter out spaces)
 				const activeToken = tokens[activeIndex]
 				const currentLineTokens = tokens.filter(t =>
-					t.blockIndex === activeToken.blockIndex && t.lineIndex === activeToken.lineIndex
+					t.blockIndex === activeToken.blockIndex && t.lineIndex === activeToken.lineIndex && !isSpaceToken(t)
 				)
 				
 				// Find line above and below
 				const lineAbove = tokens.filter(t =>
-					t.blockIndex === activeToken.blockIndex && t.lineIndex === activeToken.lineIndex - 1
+					t.blockIndex === activeToken.blockIndex && t.lineIndex === activeToken.lineIndex - 1 && !isSpaceToken(t)
 				)
 				const lineBelow = tokens.filter(t =>
-					t.blockIndex === activeToken.blockIndex && t.lineIndex === activeToken.lineIndex + 1
+					t.blockIndex === activeToken.blockIndex && t.lineIndex === activeToken.lineIndex + 1 && !isSpaceToken(t)
 				)
 				
 				return [...lineAbove, ...currentLineTokens, ...lineBelow].map((token) => ({
 					...token,
-					isActive: token.index === activeIndex,
-					displayIndex: token.index
+					isActive: tokens.indexOf(token) === activeIndex,
+					displayIndex: tokens.indexOf(token)
 				}))
 			
 			case 'chars':
-				// Show only current line
+				// Show only current line (filter out spaces)
 				const activeCharToken = tokens[activeIndex]
 				const currentLineChars = tokens.filter(t =>
-					t.blockIndex === activeCharToken.blockIndex && t.lineIndex === activeCharToken.lineIndex
+					t.blockIndex === activeCharToken.blockIndex && 
+					t.lineIndex === activeCharToken.lineIndex && 
+					!isSpaceToken(t)
 				)
 				
 				return currentLineChars.map((token) => ({
 					...token,
-					isActive: token.index === activeIndex,
-					displayIndex: token.index
+					isActive: tokens.indexOf(token) === activeIndex,
+					displayIndex: tokens.indexOf(token)
 				}))
 			
 			default:
@@ -1444,7 +1638,7 @@ function TimingSyncPage() {
 					<div style={{marginBottom: '2rem'}}>
 						<h4 style={{marginBottom: '1rem', color: '#333'}}>Playback Speed</h4>
 						<div style={{display: 'flex', gap: '0.5rem', flexWrap: 'wrap'}}>
-							{[1.0, 0.75, 0.5, 0.25].map(speed => (
+							{[1.5, 1.0, 0.75, 0.5, 0.25].map(speed => (
 								<button
 									key={speed}
 									onClick={() => {
@@ -1523,7 +1717,17 @@ function TimingSyncPage() {
 											type="radio"
 											value={mode.value}
 											checked={isSelected}
-											onChange={(e) => !isLocked && setRecordingMode(e.target.value)}
+											onChange={(e) => {
+												if (!isLocked) {
+													const newMode = e.target.value
+													setRecordingMode(newMode)
+													// Find first non-space token for the new mode
+													const newModeTokens = getTokensByModeType(newMode)
+													const firstNonSpaceIndex = findFirstNonSpaceTokenIndex(newModeTokens)
+													setActiveTokenIndex(firstNonSpaceIndex)
+													console.log(`Manually switched to ${newMode} mode, starting at non-space token index ${firstNonSpaceIndex}`)
+												}
+											}}
 											disabled={isLocked}
 											style={{display: 'none'}}
 										/>
@@ -1910,7 +2114,7 @@ function TimingSyncPage() {
 						<button
 							onClick={() => {
 								const cleanedData = cleanupTimingData(karaokeData)
-								navigate('/playback', { state: { lyricsJson: cleanedData, audioUrl } })
+								navigate('/playback', { state: { lyricsJson: cleanedData, audioFile } })
 							}}
 							style={{
 								width: '100%',
