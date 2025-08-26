@@ -378,293 +378,141 @@ function LyricsPlaybackScreen() {
 		}
 	}
 	
-	// Render karaoke display
+	// Progress calculation using audio timestamp (like your proof of concept)
+	const getProgress = (start, end) => {
+		const now = currentTime * 1000 // Convert to milliseconds
+		if (now < start) return 0
+		if (now > end) return 100
+		return ((now - start) / (end - start)) * 100
+	}
+
+	// Render karaoke display using proof of concept approach
 	const renderKaraokeDisplay = () => {
 		if (!processedLyricsJson) {
 			return <div style={{color: 'white', textAlign: 'center'}}>No lyrics data available</div>
 		}
-		
-		const tokens = getCurrentTokens()
-		
-		// Find active blocks to display (current + context)
-		const activeBlockIndex = tokens.blocks.findIndex(block => block.isActive)
-		const startIndex = Math.max(0, activeBlockIndex === -1 ? 0 : activeBlockIndex - 1)
-		const endIndex = Math.min(tokens.blocks.length - 1, activeBlockIndex === -1 ? 2 : activeBlockIndex + 1)
-		const blocksToShow = tokens.blocks.slice(startIndex, endIndex + 1)
-		
+
 		return (
 			<div style={{
 				display: 'flex',
 				flexDirection: 'column',
-				gap: '3rem',
+				gap: '2rem',
 				alignItems: 'center',
 				justifyContent: 'center',
 				height: '100%',
 				padding: '2rem',
 				overflow: 'hidden'
 			}}>
-				{blocksToShow.map((block) => (
-					<div key={block.blockIndex} style={{
-						textAlign: 'center',
-						transition: 'all 0.3s ease',
-						opacity: block.isActive ? 1 : 0.4,
-						transform: block.isActive ? 'scale(1.1)' : 'scale(1)'
+				{/* Render all blocks and their lines in order, dynamically generating tokens */}
+				{processedLyricsJson.blocks.map((block, blockIdx) => (
+					<div key={blockIdx} style={{
+						padding: '1rem',
+						border: '1px solid rgba(255,255,255,0.2)',
+						borderRadius: '8px',
+						background: 'rgba(0,0,0,0.3)'
 					}}>
-						{block.lines.map((line, lineIndex) => {
-							const lineTokens = tokens.lines.find(l => 
-								l.blockIndex === block.blockIndex && l.lineIndex === lineIndex
-							)
-							
-							return (
-								<div key={lineIndex} style={{ marginBottom: '1rem', position: 'relative' }}>
-									{/* Line text with progress bars for smallest available token level */}
-									<div style={{
+						{block.lines.map((line, lineIdx) => {
+							// Unified nested generator for line/word/char levels
+							if (line.text !== "") {
+								// Line-level: has non-empty text
+								return (
+									<div key={blockIdx + "-" + lineIdx} style={{
+										marginBottom: '1rem',
+										display: 'flex',
 										fontSize: isFullscreen ? '3rem' : '2rem',
-										lineHeight: '1.4',
-										marginBottom: '0.5rem'
+										color: 'white'
 									}}>
-										{/* Determine the smallest token level available for this line */}
-										{(() => {
-											// Check if we have character-level data
-											const hasCharData = line.words.some(word => word.chars && word.chars.length > 0)
-											// Check if we have word-level data
-											const hasWordData = line.words && line.words.length > 0
-											
-											if (hasCharData) {
-												// Use character-level progress bars only
-												return line.words.map((word, wordIndex) => (
-													<span key={wordIndex}>
-														{word.chars.map((char, charIndex) => {
-															const charToken = tokens.chars.find(c => 
-																c.blockIndex === block.blockIndex && 
-																c.lineIndex === lineIndex && 
-																c.wordIndex === wordIndex && 
-																c.charIndex === charIndex
-															)
-															
-															const charVoiceColor = getVoiceColor(char.voice || word.voice)
-															const charTextColor = charToken?.isPast || charToken?.isActive ? charVoiceColor : 
-																				  `${charVoiceColor}60`
-															
-															return (
-																<span
-																	key={charIndex}
-																	style={{
-																		color: charTextColor,
-																		transition: 'color 0.2s ease',
-																		position: 'relative',
-																		display: 'inline-block'
-																	}}
-																>
-																	{char.text}
-																	{/* Progress bar for character - shows current progress */}
-																	<div style={{
-																		position: 'absolute',
-																		bottom: '-6px',
-																		left: '0',
-																		right: '0',
-																		height: '3px',
-																		background: 'rgba(255,255,255,0.2)',
-																		overflow: 'hidden'
-																	}}>
-																		<div style={{
-																			width: `${charToken ? getTokenProgress(charToken) : 0}%`,
-																			height: '100%',
-																			background: charVoiceColor,
-																			transition: 'width 0.1s linear'
-																		}} />
-																	</div>
-																</span>
-															)
-														})}
-														{/* Space between words with progress bar */}
-														{wordIndex < line.words.length - 1 && (() => {
-															// Calculate space timing: from end of current word to start of next word
-															const currentWord = word
-															const nextWord = line.words[wordIndex + 1]
-															
-															// For character mode, use last char of current word and first char of next word
-															const currentEndTime = currentWord.chars && currentWord.chars.length > 0 
-																? currentWord.chars[currentWord.chars.length - 1].end
-																: currentWord.end
-															const nextStartTime = nextWord.chars && nextWord.chars.length > 0
-																? nextWord.chars[0].start
-																: nextWord.start
-															
-															// Create virtual space token for progress calculation
-															const spaceToken = {
-																start: currentEndTime,
-																end: nextStartTime,
-																isActive: currentTime * 1000 >= currentEndTime && currentTime * 1000 <= nextStartTime,
-																isPast: currentTime * 1000 > nextStartTime,
-																isFuture: currentTime * 1000 < currentEndTime
-															}
-															
-															return (
-																<span style={{ 
-																	position: 'relative', 
-																	display: 'inline-block',
-																	width: '0.5ch',  // Ensure space has width
-																	textAlign: 'center'
-																}}>
-																	&nbsp;
-																	{/* Progress bar for space - with calculated timing */}
-																	<div style={{
-																		position: 'absolute',
-																		bottom: '-6px',
-																		left: '0',
-																		right: '0',
-																		height: '3px',
-																		background: 'rgba(255,255,255,0.2)',
-																		overflow: 'hidden'
-																	}}>
-																		<div style={{
-																			width: `${getTokenProgress(spaceToken)}%`,
-																			height: '100%',
-																			background: getVoiceColor(currentWord.voice || nextWord.voice),
-																			transition: 'width 0.1s linear'
-																		}} />
-																	</div>
-																</span>
-															)
-														})()}
-													</span>
-												))
-											} else if (hasWordData) {
-												// Use word-level progress bars only
-												return line.words.map((word, wordIndex) => {
-													const wordToken = tokens.words.find(w => 
-														w.blockIndex === block.blockIndex && 
-														w.lineIndex === lineIndex && 
-														w.wordIndex === wordIndex
-													)
-													
-													const voiceColor = getVoiceColor(word.voice)
-													const textColor = wordToken?.isPast || wordToken?.isActive ? voiceColor : 
-																	 `${voiceColor}60`
-													
-													return (
-														<span key={wordIndex}>
-															<span style={{
-																color: textColor,
-																transition: 'color 0.2s ease',
-																position: 'relative',
-																display: 'inline-block'
+										<div style={{ display: 'inline-block' }}>
+											<span>{line.text}</span>
+											<div style={{
+												width: '100%',
+												height: '4px',
+												background: 'rgba(255,255,255,0.2)',
+												marginTop: '4px',
+												overflow: 'hidden'
+											}}>
+												<div style={{
+													height: '100%',
+													background: getVoiceColor(line.voice),
+													width: `${getProgress(line.start, line.end)}%`,
+													transition: 'width 0.05s linear'
+												}} />
+											</div>
+										</div>
+									</div>
+								)
+							} else if (Array.isArray(line.words) && line.words.length > 0) {
+								// Word-level: has words
+								return (
+									<div key={blockIdx + "-" + lineIdx} style={{
+										marginBottom: '1rem',
+										display: 'flex',
+										fontSize: isFullscreen ? '3rem' : '2rem',
+										color: 'white'
+									}}>
+										{line.words.map((word, wordIdx) => (
+											<span key={wordIdx} style={{
+												display: 'inline-flex',
+												flexDirection: 'column',
+												verticalAlign: 'top'
+											}}>
+												{/* Char-level: word has chars */}
+												{Array.isArray(word.chars) && word.chars.length > 0 ? (
+													<span style={{
+														flexDirection: 'row',
+														display: 'inline-flex'
+													}}>
+														{word.chars.map((char, charIdx) => (
+															<span key={charIdx} style={{
+																display: 'inline-flex',
+																flexDirection: 'column',
+																verticalAlign: 'top'
 															}}>
-																{word.text}
-																{/* Progress bar for word - shows current progress */}
+																{char.text === " " ? <span>&nbsp;</span> : char.text}
 																<div style={{
-																	position: 'absolute',
-																	bottom: '-6px',
-																	left: '0',
-																	right: '0',
+																	width: '100%',
 																	height: '3px',
 																	background: 'rgba(255,255,255,0.2)',
+																	marginTop: '4px',
 																	overflow: 'hidden'
 																}}>
 																	<div style={{
-																		width: `${wordToken ? getTokenProgress(wordToken) : 0}%`,
 																		height: '100%',
-																		background: voiceColor,
-																		transition: 'width 0.1s linear'
+																		background: getVoiceColor(char.voice || word.voice),
+																		width: `${getProgress(char.start, char.end)}%`,
+																		transition: 'width 0.05s linear'
 																	}} />
 																</div>
 															</span>
-															{/* Space between words with progress bar */}
-															{wordIndex < line.words.length - 1 && (() => {
-																// Calculate space timing: from end of current word to start of next word
-																const currentWord = word
-																const nextWord = line.words[wordIndex + 1]
-																
-																// Create virtual space token for progress calculation
-																const spaceToken = {
-																	start: currentWord.end,
-																	end: nextWord.start,
-																	isActive: currentTime * 1000 >= currentWord.end && currentTime * 1000 <= nextWord.start,
-																	isPast: currentTime * 1000 > nextWord.start,
-																	isFuture: currentTime * 1000 < currentWord.end
-																}
-																
-																return (
-																	<span style={{ 
-																		position: 'relative', 
-																		display: 'inline-block',
-																		width: '1ch',  // Ensure space has width
-																		textAlign: 'center'
-																	}}>
-																		&nbsp;
-																		{/* Progress bar for space - with calculated timing */}
-																		<div style={{
-																			position: 'absolute',
-																			bottom: '-6px',
-																			left: '0',
-																			right: '0',
-																			height: '3px',
-																			background: 'rgba(255,255,255,0.2)',
-																			overflow: 'hidden'
-																		}}>
-																			<div style={{
-																				width: `${getTokenProgress(spaceToken)}%`,
-																				height: '100%',
-																				background: getVoiceColor(currentWord.voice || nextWord.voice),
-																				transition: 'width 0.1s linear'
-																			}} />
-																		</div>
-																	</span>
-																)
-															})()}
-														</span>
-													)
-												})
-											} else {
-												// Use line-level progress bar only
-												const lineVoiceColor = getVoiceColor(line.voice)
-												const lineTextColor = lineTokens?.isPast || lineTokens?.isActive ? lineVoiceColor : 
-																	 `${lineVoiceColor}60`
-												
-												return (
-													<span style={{
-														color: lineTextColor,
-														transition: 'color 0.2s ease',
-														position: 'relative',
-														display: 'inline-block'
-													}}>
-														{line.text}
+														))}
 													</span>
-												)
-											}
-										})()}
+												) : (
+													// Word-level: no chars
+													<>
+														{word.text === " " ? <span>&nbsp;</span> : word.text}
+														<div style={{
+															width: '100%',
+															height: '3px',
+															background: 'rgba(255,255,255,0.2)',
+															marginTop: '4px',
+															overflow: 'hidden'
+														}}>
+															<div style={{
+																height: '100%',
+																background: getVoiceColor(word.voice),
+																width: `${getProgress(word.start, word.end)}%`,
+																transition: 'width 0.05s linear'
+															}} />
+														</div>
+													</>
+												)}
+											</span>
+										))}
 									</div>
-									
-									{/* Line-level progress bar - only shown if no word/char data */}
-									{(() => {
-										const hasCharData = line.words.some(word => word.chars && word.chars.length > 0)
-										const hasWordData = line.words && line.words.length > 0
-										
-										if (!hasCharData && !hasWordData) {
-											return (
-												<div style={{
-													position: 'absolute',
-													bottom: '-8px',
-													left: '0',
-													right: '0',
-													height: '4px',
-													background: 'rgba(255,255,255,0.2)',
-													overflow: 'hidden'
-												}}>
-													<div style={{
-														width: `${lineTokens ? getTokenProgress(lineTokens) : 0}%`,
-														height: '100%',
-														background: getVoiceColor(lineTokens?.voice),
-														transition: 'width 0.1s linear'
-													}} />
-												</div>
-											)
-										}
-										return null
-									})()}
-								</div>
-							)
+								)
+							}
+							// If neither text nor words, render nothing
+							return null
 						})}
 					</div>
 				))}
