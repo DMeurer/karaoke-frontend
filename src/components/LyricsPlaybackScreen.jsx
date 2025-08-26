@@ -40,9 +40,14 @@ function LyricsPlaybackScreen() {
 		}
 	}, [audioUrl])
 	
-	// Scroll to top when component mounts
+	// Scroll to top when component mounts and initialize container scroll
 	useEffect(() => {
 		window.scrollTo(0, 0)
+		// Also scroll the karaoke container to top
+		const container = document.getElementById('karaoke-container')
+		if (container) {
+			container.scrollTop = 0
+		}
 	}, [])
 	
 	// Audio event handlers
@@ -57,6 +62,23 @@ function LyricsPlaybackScreen() {
 			setCurrentTime(audioRef.current.currentTime)
 		}
 	}
+
+	// High-frequency timer for smooth progress bar updates
+	useEffect(() => {
+		let intervalId
+		if (isPlaying && audioRef.current) {
+			intervalId = setInterval(() => {
+				if (audioRef.current) {
+					setCurrentTime(audioRef.current.currentTime)
+				}
+			}, 16) // Update every 16ms (~60fps)
+		}
+		return () => {
+			if (intervalId) {
+				clearInterval(intervalId)
+			}
+		}
+	}, [isPlaying])
 	
 	const togglePlayPause = () => {
 		if (audioRef.current) {
@@ -327,6 +349,34 @@ function LyricsPlaybackScreen() {
 		const voice = processedLyricsJson?.voices?.find(v => v.id === voiceId)
 		return voice?.color || '#87CEEB'
 	}
+
+	// Get darkened voice color (for inactive text)
+	const getDarkenedVoiceColor = (voiceId) => {
+		const color = getVoiceColor(voiceId)
+		// Convert hex to RGB, darken by reducing opacity/brightness
+		if (color.startsWith('#')) {
+			const r = parseInt(color.slice(1, 3), 16)
+			const g = parseInt(color.slice(3, 5), 16)
+			const b = parseInt(color.slice(5, 7), 16)
+			// Darken by 60%
+			return `rgb(${Math.round(r * 0.4)}, ${Math.round(g * 0.4)}, ${Math.round(b * 0.4)})`
+		}
+		return color
+	}
+
+	// Get text color based on timing (darkened for inactive, real color for active/past)
+	const getTextColor = (token) => {
+		if (!token) return 'white'
+		const currentTimeMs = currentTime * 1000
+		const isActiveOrPast = currentTimeMs >= token.start
+		
+		if (token.voice) {
+			return isActiveOrPast ? getVoiceColor(token.voice) : getDarkenedVoiceColor(token.voice)
+		}
+		
+		// Default colors if no voice specified
+		return isActiveOrPast ? 'white' : 'rgba(255,255,255,0.4)'
+	}
 	
 	// Format time display
 	const formatTime = (time) => {
@@ -386,6 +436,78 @@ function LyricsPlaybackScreen() {
 		return ((now - start) / (end - start)) * 100
 	}
 
+	// Find active line for scrolling
+	const getActiveLineId = () => {
+		if (!processedLyricsJson) return null
+		
+		const now = currentTime * 1000
+		const activeLines = []
+		
+		// Find all active lines across all blocks
+		processedLyricsJson.blocks.forEach((block, blockIdx) => {
+			block.lines.forEach((line, lineIdx) => {
+				if (now >= line.start && now <= line.end) {
+					activeLines.push(`line-${blockIdx}-${lineIdx}`)
+				}
+			})
+		})
+		
+		// If multiple active lines, return middle one
+		if (activeLines.length > 1) {
+			return activeLines[Math.floor(activeLines.length / 2)]
+		}
+		
+		// If one active line, return it
+		if (activeLines.length === 1) {
+			return activeLines[0]
+		}
+		
+		// If no active lines, find next upcoming line
+		for (let blockIdx = 0; blockIdx < processedLyricsJson.blocks.length; blockIdx++) {
+			const block = processedLyricsJson.blocks[blockIdx]
+			for (let lineIdx = 0; lineIdx < block.lines.length; lineIdx++) {
+				const line = block.lines[lineIdx]
+				if (line.start > now) {
+					return `line-${blockIdx}-${lineIdx}`
+				}
+			}
+		}
+		
+		// If no upcoming lines, return last line
+		const lastBlock = processedLyricsJson.blocks[processedLyricsJson.blocks.length - 1]
+		if (lastBlock && lastBlock.lines.length > 0) {
+			return `line-${processedLyricsJson.blocks.length - 1}-${lastBlock.lines.length - 1}`
+		}
+		
+		return null
+	}
+
+	// Auto-scroll to active line
+	useEffect(() => {
+		const activeLineId = getActiveLineId()
+		if (activeLineId) {
+			const element = document.getElementById(activeLineId)
+			const container = document.getElementById('karaoke-container')
+			
+			if (element && container) {
+				// Calculate the position to scroll the element to center of container
+				const containerRect = container.getBoundingClientRect()
+				const elementRect = element.getBoundingClientRect()
+				
+				const containerCenter = containerRect.height / 2
+				const elementTop = element.offsetTop - container.offsetTop
+				const elementHeight = elementRect.height
+				
+				const scrollToPosition = elementTop - containerCenter + (elementHeight / 2)
+				
+				container.scrollTo({
+					top: scrollToPosition,
+					behavior: 'smooth'
+				})
+			}
+		}
+	}, [currentTime, processedLyricsJson])
+
 	// Render karaoke display using proof of concept approach
 	const renderKaraokeDisplay = () => {
 		if (!processedLyricsJson) {
@@ -393,35 +515,43 @@ function LyricsPlaybackScreen() {
 		}
 
 		return (
-			<div style={{
-				display: 'flex',
-				flexDirection: 'column',
-				gap: '2rem',
-				alignItems: 'center',
-				justifyContent: 'center',
-				height: '100%',
-				padding: '2rem',
-				overflow: 'hidden'
-			}}>
+			<div 
+				id="karaoke-container"
+				style={{
+					display: 'flex',
+					flexDirection: 'column',
+					gap: '2rem',
+					alignItems: 'center',
+					justifyContent: 'flex-start', // Changed from center to flex-start
+					height: '100%',
+					padding: '2rem 2rem', // Add large top/bottom padding for scroll space
+					overflow: 'auto', // Changed from hidden to auto
+					scrollBehavior: 'smooth'
+				}}>
 				{/* Render all blocks and their lines in order, dynamically generating tokens */}
 				{processedLyricsJson.blocks.map((block, blockIdx) => (
-					<div key={blockIdx} style={{
-						padding: '1rem',
-						border: '1px solid rgba(255,255,255,0.2)',
-						borderRadius: '8px',
-						background: 'rgba(0,0,0,0.3)'
-					}}>
+					<div 
+						key={blockIdx} 
+						id={`block-${blockIdx}`}
+						style={{
+							padding: '1rem',
+							background: 'rgba(0,0,0,0.3)'
+						}}>
 						{block.lines.map((line, lineIdx) => {
 							// Unified nested generator for line/word/char levels
 							if (line.text !== "") {
 								// Line-level: has non-empty text
 								return (
-									<div key={blockIdx + "-" + lineIdx} style={{
-										marginBottom: '1rem',
-										display: 'flex',
-										fontSize: isFullscreen ? '3rem' : '2rem',
-										color: 'white'
-									}}>
+									<div 
+										key={blockIdx + "-" + lineIdx} 
+										id={`line-${blockIdx}-${lineIdx}`}
+										style={{
+											marginBottom: '1rem',
+											display: 'flex',
+											justifyContent: 'center',
+											fontSize: isFullscreen ? '3rem' : '2rem',
+											color: getTextColor(line)
+										}}>
 										<div style={{ display: 'inline-block' }}>
 											<span>{line.text}</span>
 											<div style={{
@@ -444,12 +574,15 @@ function LyricsPlaybackScreen() {
 							} else if (Array.isArray(line.words) && line.words.length > 0) {
 								// Word-level: has words
 								return (
-									<div key={blockIdx + "-" + lineIdx} style={{
-										marginBottom: '1rem',
-										display: 'flex',
-										fontSize: isFullscreen ? '3rem' : '2rem',
-										color: 'white'
-									}}>
+									<div 
+										key={blockIdx + "-" + lineIdx}
+										id={`line-${blockIdx}-${lineIdx}`}
+										style={{
+											marginBottom: '1rem',
+											display: 'flex',
+											justifyContent: 'center',
+											fontSize: isFullscreen ? '3rem' : '2rem'
+										}}>
 										{line.words.map((word, wordIdx) => (
 											<span key={wordIdx} style={{
 												display: 'inline-flex',
@@ -466,7 +599,8 @@ function LyricsPlaybackScreen() {
 															<span key={charIdx} style={{
 																display: 'inline-flex',
 																flexDirection: 'column',
-																verticalAlign: 'top'
+																verticalAlign: 'top',
+																color: getTextColor(char)
 															}}>
 																{char.text === " " ? <span>&nbsp;</span> : char.text}
 																<div style={{
@@ -489,7 +623,9 @@ function LyricsPlaybackScreen() {
 												) : (
 													// Word-level: no chars
 													<>
-														{word.text === " " ? <span>&nbsp;</span> : word.text}
+														<span style={{ color: getTextColor(word) }}>
+															{word.text === " " ? <span>&nbsp;</span> : word.text}
+														</span>
 														<div style={{
 															width: '100%',
 															height: '3px',
