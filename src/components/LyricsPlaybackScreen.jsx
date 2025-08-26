@@ -243,13 +243,16 @@ function LyricsPlaybackScreen() {
 						const charStartTime = wordStartTime + (index * (wordDuration / word.text.length))
 						const charEndTime = wordStartTime + ((index + 1) * (wordDuration / word.text.length))
 						
-						return {
+						const charToken = {
 							text: char,
 							start: Math.round(charStartTime),
 							end: Math.round(charEndTime),
 							voice: word.voice || 0,
 							position: word.position || ""
 						}
+						
+						
+						return charToken
 					})
 					
 					currentTimeMs += wordDuration
@@ -288,15 +291,33 @@ function LyricsPlaybackScreen() {
 		}
 	}, [lyricsJson, duration])
 	
-	// Get progress percentage for a token
+	// Get progress percentage for a token - shows gradual filling
 	const getTokenProgress = (token) => {
-		if (!token || typeof token.start !== 'number' || typeof token.end !== 'number') return 0
-		if (token.start === token.end) return 0
+		if (!token) return 0
 		
 		const currentTimeMs = currentTime * 1000
-		if (currentTimeMs < token.start) return 0
-		if (currentTimeMs >= token.end) return 100
 		
+		// Ensure we have valid numeric timing
+		if (typeof token.start !== 'number' || typeof token.end !== 'number') {
+			return 0
+		}
+		
+		// Avoid division by zero
+		if (token.start === token.end) {
+			return currentTimeMs >= token.start ? 100 : 0
+		}
+		
+		// Before token starts: 0%
+		if (currentTimeMs < token.start) {
+			return 0
+		}
+		
+		// After token ends: 100%
+		if (currentTimeMs >= token.end) {
+			return 100
+		}
+		
+		// During token: gradual progress from 0% to 100%
 		const progress = ((currentTimeMs - token.start) / (token.end - token.start)) * 100
 		return Math.max(0, Math.min(100, progress))
 	}
