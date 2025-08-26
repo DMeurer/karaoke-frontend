@@ -20,6 +20,7 @@ function TimingSyncPage() {
 	const location = useLocation()
 	const navigate = useNavigate();
 	const audioFile = location.state?.audioFile
+	const initialAudioUrl = location.state?.audioUrl
 	const initialKaraokeData = location.state?.karaokeData
 	
 	// Audio playback state
@@ -27,7 +28,7 @@ function TimingSyncPage() {
 	const [currentTime, setCurrentTime] = useState(0)
 	const [duration, setDuration] = useState(0)
 	const [playbackSpeed, setPlaybackSpeed] = useState(1.0)
-	const [audioUrl, setAudioUrl] = useState(null)
+	const [audioUrl, setAudioUrl] = useState(initialAudioUrl)
 	
 	// Karaoke data state (mutable copy from initial data)
 	const [karaokeData, setKaraokeData] = useState(initialKaraokeData)
@@ -42,13 +43,14 @@ function TimingSyncPage() {
 	const [wKeyPressed, setWKeyPressed] = useState(false)
 	const [unlockedModes, setUnlockedModes] = useState(['blocks']) // Start with only blocks unlocked
 	const [voicesExpanded, setVoicesExpanded] = useState(false) // Voice section collapsed by default
+	const [syncLocked, setSyncLocked] = useState(false) // Token-playhead sync lock
 	const wKeyPressedRef = useRef(false) // Use ref for immediate state tracking
 	
 	const audioRef = useRef(null)
 	
-	// Initialize audio URL from uploaded file
+	// Initialize audio URL from uploaded file (only if no initialAudioUrl)
 	useEffect(() => {
-		if (audioFile) {
+		if (audioFile && !initialAudioUrl) {
 			const url = URL.createObjectURL(audioFile)
 			setAudioUrl(url)
 			
@@ -56,7 +58,7 @@ function TimingSyncPage() {
 				URL.revokeObjectURL(url)
 			}
 		}
-	}, [audioFile])
+	}, [audioFile, initialAudioUrl])
 	
 	// Audio control handlers
 	const handlePlayPause = () => {
@@ -98,9 +100,54 @@ function TimingSyncPage() {
 			const width = progressBar.offsetWidth
 			const newTime = (clickX / width) * duration
 			
-			audio.currentTime = newTime
-			setCurrentTime(newTime)
+			if (typeof newTime === 'number' && isFinite(newTime) && newTime >= 0) {
+				audio.currentTime = newTime
+				setCurrentTime(newTime)
+			}
 			console.log('Seeked to:', newTime, 's')
+			
+			// If sync is locked, find and set the token at this time
+			if (syncLocked && typeof newTime === 'number' && isFinite(newTime)) {
+				const tokens = getTokensByMode()
+				const newTimeMs = newTime * 1000
+				
+				if (tokens.length > 0) {
+					// Find the token that should be active at this time
+					let targetTokenIndex = -1
+					for (let i = 0; i < tokens.length; i++) {
+						const token = tokens[i]
+						if (token && typeof token.start === 'number' && typeof token.end === 'number') {
+							if (token.start <= newTimeMs && newTimeMs <= token.end) {
+								targetTokenIndex = i
+								break
+							}
+							// If we're between tokens, pick the next one
+							if (i < tokens.length - 1 && token.end < newTimeMs && newTimeMs < tokens[i + 1].start) {
+								targetTokenIndex = i + 1
+								break
+							}
+						}
+					}
+					
+					// If no token found but time is past the last token, use last token
+					if (targetTokenIndex === -1 && tokens[tokens.length - 1] && 
+						typeof tokens[tokens.length - 1].end === 'number' && 
+						newTimeMs > tokens[tokens.length - 1].end) {
+						targetTokenIndex = tokens.length - 1
+					}
+					
+					// If still no token and time is before first token, use first token
+					if (targetTokenIndex === -1 && tokens[0] && 
+						typeof tokens[0].start === 'number' && 
+						newTimeMs < tokens[0].start) {
+						targetTokenIndex = 0
+					}
+					
+					if (targetTokenIndex >= 0 && targetTokenIndex !== activeTokenIndex) {
+						setActiveTokenIndex(targetTokenIndex)
+					}
+				}
+			}
 		}
 	}
 	
@@ -119,6 +166,212 @@ function TimingSyncPage() {
 		}
 	}
 	
+	/**
+	 * Clean up and interpolate timing data for child tokens
+	 * @param {Object} data - The karaoke data to process
+	 * @returns {Object} Cleaned karaoke data
+	 */
+	const cleanupTimingData = (data) => {
+		if (!data || !data.blocks) return data
+
+		const cleanedData = JSON.parse(JSON.stringify(data)) // Deep copy
+
+		cleanedData.blocks.forEach(block => {
+			block.lines.forEach(line => {
+				// Clean up words
+				if (line.words && Array.isArray(line.words)) {
+					const timedWords = line.words.filter(word => 
+						typeof word.start === 'number' && typeof word.end === 'number' && 
+						(word.start !== 0 || word.end !== 0)
+					)
+
+					if (timedWords.length === 0) {
+						// No words have timing - remove all word data
+						delete line.words
+					} else if (timedWords.length < line.words.length) {
+						// Some words have timing - interpolate missing ones
+						const interpolatedWords = []
+						
+						for (let i = 0; i < line.words.length; i++) {
+							const word = line.words[i]
+							
+							if (typeof word.start === 'number' && typeof word.end === 'number' && 
+								(word.start !== 0 || word.end !== 0)) {
+								// Word has timing data
+								interpolatedWords.push(word)
+							} else {
+								// Word needs interpolated timing
+								let startTime, endTime
+								
+								// Find previous timed word
+								let prevWord = null
+								for (let j = i - 1; j >= 0; j--) {
+									const candidate = line.words[j]
+									if (typeof candidate.start === 'number' && typeof candidate.end === 'number' && 
+										(candidate.start !== 0 || candidate.end !== 0)) {
+										prevWord = candidate
+										break
+									}
+								}
+								
+								// Find next timed word
+								let nextWord = null
+								for (let j = i + 1; j < line.words.length; j++) {
+									const candidate = line.words[j]
+									if (typeof candidate.start === 'number' && typeof candidate.end === 'number' && 
+										(candidate.start !== 0 || candidate.end !== 0)) {
+										nextWord = candidate
+										break
+									}
+								}
+								
+								if (prevWord && nextWord) {
+									// Interpolate between previous and next
+									const totalGap = nextWord.start - prevWord.end
+									const wordsInGap = 1 // This word
+									const timePerWord = totalGap / (wordsInGap + 1)
+									startTime = prevWord.end + timePerWord
+									endTime = startTime + timePerWord
+								} else if (prevWord) {
+									// Use parent end time
+									startTime = prevWord.end
+									endTime = line.end || (startTime + 1000) // 1 second default
+								} else if (nextWord) {
+									// Use parent start time
+									endTime = nextWord.start
+									startTime = line.start || (endTime - 1000) // 1 second default
+								} else {
+									// Fallback to parent timing
+									startTime = line.start || 0
+									endTime = line.end || (startTime + 1000)
+								}
+								
+								interpolatedWords.push({
+									...word,
+									start: Math.round(startTime),
+									end: Math.round(endTime)
+								})
+							}
+						}
+						
+						line.words = interpolatedWords
+					}
+
+					// Clean up characters for each word
+					if (line.words) {
+						line.words.forEach(word => {
+							if (word.chars && Array.isArray(word.chars)) {
+								const timedChars = word.chars.filter(char => 
+									typeof char.start === 'number' && typeof char.end === 'number' && 
+									(char.start !== 0 || char.end !== 0)
+								)
+
+								if (timedChars.length === 0) {
+									// No chars have timing - remove all char data
+									delete word.chars
+								} else if (timedChars.length < word.chars.length) {
+									// Some chars have timing - interpolate missing ones
+									const interpolatedChars = []
+									
+									for (let i = 0; i < word.chars.length; i++) {
+										const char = word.chars[i]
+										
+										if (typeof char.start === 'number' && typeof char.end === 'number' && 
+											(char.start !== 0 || char.end !== 0)) {
+											// Char has timing data
+											interpolatedChars.push(char)
+										} else {
+											// Char needs interpolated timing
+											let startTime, endTime
+											
+											// Find previous timed char
+											let prevChar = null
+											for (let j = i - 1; j >= 0; j--) {
+												const candidate = word.chars[j]
+												if (typeof candidate.start === 'number' && typeof candidate.end === 'number' && 
+													(candidate.start !== 0 || candidate.end !== 0)) {
+													prevChar = candidate
+													break
+												}
+											}
+											
+											// Find next timed char
+											let nextChar = null
+											for (let j = i + 1; j < word.chars.length; j++) {
+												const candidate = word.chars[j]
+												if (typeof candidate.start === 'number' && typeof candidate.end === 'number' && 
+													(candidate.start !== 0 || candidate.end !== 0)) {
+													nextChar = candidate
+													break
+												}
+											}
+											
+											if (prevChar && nextChar) {
+												// Interpolate between previous and next
+												const totalGap = nextChar.start - prevChar.end
+												const charsInGap = 1 // This char
+												const timePerChar = totalGap / (charsInGap + 1)
+												startTime = prevChar.end + timePerChar
+												endTime = startTime + timePerChar
+											} else if (prevChar) {
+												// Use word end time
+												startTime = prevChar.end
+												endTime = word.end || (startTime + 100) // 100ms default
+											} else if (nextChar) {
+												// Use word start time
+												endTime = nextChar.start
+												startTime = word.start || (endTime - 100) // 100ms default
+											} else {
+												// Fallback to word timing
+												const charDuration = (word.end - word.start) / word.chars.length
+												startTime = word.start + (i * charDuration)
+												endTime = startTime + charDuration
+											}
+											
+											interpolatedChars.push({
+												...char,
+												start: Math.round(startTime),
+												end: Math.round(endTime)
+											})
+										}
+									}
+									
+									word.chars = interpolatedChars
+								}
+							}
+						})
+					}
+				}
+			})
+		})
+
+		// Clear text for tokens that have children to avoid duplication
+		cleanedData.blocks.forEach(block => {
+			// Clear block text if it has lines (which it always should)
+			if (block.lines && Array.isArray(block.lines) && block.lines.length > 0) {
+				block.text = ""
+			}
+
+			block.lines.forEach(line => {
+				// Clear line text if it has words
+				if (line.words && Array.isArray(line.words) && line.words.length > 0) {
+					line.text = ""
+				}
+
+				// Clear word text if it has characters
+				if (line.words) {
+					line.words.forEach(word => {
+						if (word.chars && Array.isArray(word.chars) && word.chars.length > 0) {
+							word.text = ""
+						}
+					})
+				}
+			})
+		})
+
+		return cleanedData
+	}
+
 	/**
 	 * Record timestamp for current active token
 	 * @param {number} timestamp - Current audio time in milliseconds
@@ -140,7 +393,26 @@ function TimingSyncPage() {
 	 */
 	const goToPreviousToken = () => {
 		if (activeTokenIndex > 0) {
-			setActiveTokenIndex(prev => prev - 1)
+			const newIndex = activeTokenIndex - 1
+			setActiveTokenIndex(newIndex)
+			
+			// If sync is locked, jump playhead to this token's start time
+			if (syncLocked && audioRef.current) {
+				const tokens = getTokensByMode()
+				if (tokens[newIndex]) {
+					const token = tokens[newIndex]
+					console.log('Previous token for sync:', token, 'start:', token.start)
+					const tokenStartTime = token.start / 1000 // Convert to seconds
+					console.log('Calculated start time (previous):', tokenStartTime)
+					if (typeof tokenStartTime === 'number' && isFinite(tokenStartTime) && tokenStartTime >= 0) {
+						console.log('Setting currentTime to (previous):', tokenStartTime)
+						audioRef.current.currentTime = tokenStartTime
+						setCurrentTime(tokenStartTime)
+					} else {
+						console.log('Invalid token start time (previous):', tokenStartTime)
+					}
+				}
+			}
 		}
 	}
 	
@@ -163,6 +435,18 @@ function TimingSyncPage() {
 		const newIndex = activeTokenIndex + direction
 		if (newIndex >= 0 && newIndex < tokens.length) {
 			setActiveTokenIndex(newIndex)
+			
+			// If sync is locked, jump playhead to this token's start time
+			if (syncLocked && audioRef.current && tokens[newIndex]) {
+				const token = tokens[newIndex]
+				const tokenStartTime = token.start / 1000 // Convert to seconds
+				// Only sync if the token has meaningful timing data (not just 0)
+				if (typeof tokenStartTime === 'number' && isFinite(tokenStartTime) && 
+					tokenStartTime >= 0 && (token.start !== 0 || token.end !== 0)) {
+					audioRef.current.currentTime = tokenStartTime
+					setCurrentTime(tokenStartTime)
+				}
+			}
 		}
 	}
 	
@@ -259,17 +543,44 @@ function TimingSyncPage() {
 	}
 	
 	/**
-	 * Update unlocked modes based on completion status
+	 * Check if the current active token has been recorded
+	 * @returns {boolean} True if current token has timing data
+	 */
+	const isCurrentTokenRecorded = () => {
+		if (!karaokeData) return false
+		
+		const tokens = getTokensByMode()
+		if (activeTokenIndex >= tokens.length) return false
+		
+		const currentToken = tokens[activeTokenIndex]
+		return currentToken && 
+			   typeof currentToken.start === 'number' && 
+			   typeof currentToken.end === 'number' &&
+			   currentToken.start > 0 && currentToken.end > 0
+	}
+	
+	/**
+	 * Update unlocked modes based on current token recording status and completion
 	 */
 	const updateUnlockedModes = () => {
 		const modes = ['blocks', 'lines', 'words', 'chars']
 		const newUnlockedModes = ['blocks'] // Always start with blocks
 		
+		// Traditional completion-based unlocking
 		for (let i = 0; i < modes.length - 1; i++) {
 			if (isModeCompleted(modes[i])) {
 				newUnlockedModes.push(modes[i + 1])
 			} else {
 				break
+			}
+		}
+		
+		// Additionally, unlock the next mode if current token is recorded
+		const currentModeIndex = modes.indexOf(recordingMode)
+		if (currentModeIndex >= 0 && currentModeIndex < modes.length - 1) {
+			const nextMode = modes[currentModeIndex + 1]
+			if (isCurrentTokenRecorded() && !newUnlockedModes.includes(nextMode)) {
+				newUnlockedModes.push(nextMode)
 			}
 		}
 		
@@ -285,9 +596,12 @@ function TimingSyncPage() {
 			return
 		}
 		
-		// Update voices in karaoke data
+		// Clean up and interpolate timing data before export
+		const cleanedData = cleanupTimingData(karaokeData)
+		
+		// Update voices in cleaned karaoke data
 		const exportData = {
-			...karaokeData,
+			...cleanedData,
 			voices: voices
 		}
 		
@@ -375,6 +689,13 @@ function TimingSyncPage() {
 			if (event.key.toLowerCase() === 'w' && !event.repeat && !wKeyPressedRef.current) {
 				wKeyPressedRef.current = true
 				setWKeyPressed(true)
+				
+				// In character mode, resume playback when W is pressed
+				if (recordingMode === 'chars' && audioRef.current && audioRef.current.paused) {
+					audioRef.current.play()
+					setIsPlaying(true)
+				}
+				
 				// Only record when music is playing
 				if (!isRecording && audioRef.current && !audioRef.current.paused && !audioRef.current.ended) {
 					// Start recording - record start timestamp
@@ -382,7 +703,7 @@ function TimingSyncPage() {
 					setRecordingStartTime(audioRef.current.currentTime)
 					recordTimestamp(audioRef.current.currentTime, 'start')
 					console.log('Started recording at:', audioRef.current.currentTime, 's')
-				} else if (audioRef.current && audioRef.current.paused) {
+				} else if (audioRef.current && audioRef.current.paused && recordingMode !== 'chars') {
 					console.log('Cannot record while music is paused')
 				}
 			}
@@ -394,6 +715,7 @@ function TimingSyncPage() {
 			
 			// Navigation controls
 			if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+				event.preventDefault() // Prevent duplicate handling
 				const direction = event.key === 'ArrowRight' ? 1 : -1
 				
 				if (event.ctrlKey || event.metaKey) {
@@ -410,6 +732,13 @@ function TimingSyncPage() {
 			if (event.key.toLowerCase() === 'w' && wKeyPressedRef.current) {
 				wKeyPressedRef.current = false
 				setWKeyPressed(false)
+				
+				// In character mode, pause playback when W is released
+				if (recordingMode === 'chars' && audioRef.current && !audioRef.current.paused) {
+					audioRef.current.pause()
+					setIsPlaying(false)
+				}
+				
 				if (isRecording && audioRef.current) {
 					// End recording - record end timestamp and advance to next token
 					recordTimestamp(audioRef.current.currentTime, 'end')
@@ -442,29 +771,162 @@ function TimingSyncPage() {
 			}
 		}
 		
-		// Attach to both window and document for better compatibility
+		// Use only window event listener to prevent duplicate events
 		window.addEventListener('keydown', handleKeyDown, true)
 		window.addEventListener('keyup', handleKeyUp, true)
-		document.addEventListener('keydown', handleKeyDown, true)
-		document.addEventListener('keyup', handleKeyUp, true)
 		
 		return () => {
 			window.removeEventListener('keydown', handleKeyDown, true)
 			window.removeEventListener('keyup', handleKeyUp, true)
-			document.removeEventListener('keydown', handleKeyDown, true)
-			document.removeEventListener('keyup', handleKeyUp, true)
 		}
 	}, [activeTokenIndex, recordingMode, karaokeData, isRecording, wKeyPressed, audioRef])
 	
-	// Reset active token when recording mode changes
+	/**
+	 * Find the related token when switching modes
+	 * @param {string} fromMode - Previous recording mode
+	 * @param {string} toMode - New recording mode
+	 * @param {number} currentIndex - Current token index in fromMode
+	 * @returns {number} New token index for toMode
+	 */
+	const findRelatedToken = (fromMode, toMode, currentIndex) => {
+		if (!karaokeData) return 0
+		
+		const fromTokens = getTokensByModeType(fromMode)
+		const toTokens = getTokensByModeType(toMode)
+		
+		if (fromTokens.length === 0 || toTokens.length === 0 || currentIndex >= fromTokens.length) {
+			return 0
+		}
+		
+		const currentToken = fromTokens[currentIndex]
+		
+		// Define mode hierarchy: blocks > lines > words > chars
+		const modeHierarchy = ['blocks', 'lines', 'words', 'chars']
+		const fromLevel = modeHierarchy.indexOf(fromMode)
+		const toLevel = modeHierarchy.indexOf(toMode)
+		
+		if (fromLevel === -1 || toLevel === -1) return 0
+		
+		if (toLevel < fromLevel) {
+			// Going up (e.g., words -> lines): find parent
+			for (let i = 0; i < toTokens.length; i++) {
+				const toToken = toTokens[i]
+				// Check if current token is within this parent token
+				if (toToken.blockIndex === currentToken.blockIndex &&
+					(toMode === 'blocks' || 
+					 (toMode === 'lines' && toToken.lineIndex === currentToken.lineIndex) ||
+					 (toMode === 'words' && toToken.lineIndex === currentToken.lineIndex && toToken.wordIndex === currentToken.wordIndex))) {
+					return i
+				}
+			}
+		} else if (toLevel > fromLevel) {
+			// Going down (e.g., lines -> words): find first child
+			for (let i = 0; i < toTokens.length; i++) {
+				const toToken = toTokens[i]
+				// Check if this token is a child of current token
+				if (toToken.blockIndex === currentToken.blockIndex &&
+					(fromMode === 'blocks' || 
+					 (fromMode === 'lines' && toToken.lineIndex === currentToken.lineIndex) ||
+					 (fromMode === 'words' && toToken.lineIndex === currentToken.lineIndex && toToken.wordIndex === currentToken.wordIndex))) {
+					return i
+				}
+			}
+		}
+		
+		return 0 // Fallback to first token
+	}
+	
+	/**
+	 * Get tokens by mode type (helper for findRelatedToken)
+	 */
+	const getTokensByModeType = (mode) => {
+		if (!karaokeData) return []
+		
+		switch (mode) {
+			case 'blocks':
+				return karaokeData.blocks.map((block, blockIndex) => ({
+					...block,
+					type: 'block',
+					index: blockIndex,
+					blockIndex
+				}))
+			case 'lines':
+				const lineTokens = []
+				let lineIndex = 0
+				karaokeData.blocks.forEach((block, blockIndex) => {
+					block.lines.forEach((line, localLineIndex) => {
+						lineTokens.push({
+							...line,
+							type: 'line',
+							index: lineIndex++,
+							blockIndex,
+							lineIndex: localLineIndex
+						})
+					})
+				})
+				return lineTokens
+			case 'words':
+				const wordTokens = []
+				let wordIndex = 0
+				karaokeData.blocks.forEach((block, blockIndex) => {
+					block.lines.forEach((line, lineIndex) => {
+						line.words.forEach((word, localWordIndex) => {
+							wordTokens.push({
+								...word,
+								type: 'word',
+								index: wordIndex++,
+								blockIndex,
+								lineIndex,
+								wordIndex: localWordIndex
+							})
+						})
+					})
+				})
+				return wordTokens
+			case 'chars':
+				const charTokens = []
+				let charIndex = 0
+				karaokeData.blocks.forEach((block, blockIndex) => {
+					block.lines.forEach((line, lineIndex) => {
+						line.words.forEach((word, wordIndex) => {
+							word.chars.forEach((char, localCharIndex) => {
+								charTokens.push({
+									...char,
+									type: 'char',
+									index: charIndex++,
+									blockIndex,
+									lineIndex,
+									wordIndex,
+									charIndex: localCharIndex
+								})
+							})
+						})
+					})
+				})
+				return charTokens
+			default:
+				return []
+		}
+	}
+	
+	// Track previous mode for smart token selection
+	const previousModeRef = useRef(recordingMode)
+	
+	// Smart token selection when recording mode changes
 	useEffect(() => {
-		setActiveTokenIndex(0)
-	}, [recordingMode])
+		// Only run this logic if we actually changed modes (not initial load)
+		if (previousModeRef.current !== recordingMode) {
+			const newIndex = findRelatedToken(previousModeRef.current, recordingMode, activeTokenIndex)
+			setActiveTokenIndex(newIndex)
+		}
+		
+		previousModeRef.current = recordingMode
+	}, [recordingMode, activeTokenIndex, karaokeData])
 	
 	// Update unlocked modes on component load and data changes
 	useEffect(() => {
 		updateUnlockedModes()
-	}, [karaokeData])
+	}, [karaokeData, recordingMode, activeTokenIndex])
 	
 	// Update voices when karaokeData changes
 	useEffect(() => {
@@ -544,7 +1006,9 @@ function TimingSyncPage() {
 					type: 'block',
 					index,
 					text: block.lines.map(line => line.text).join('\n'),
-					voice: block.voice
+					voice: block.voice,
+					start: block.start,
+					end: block.end
 				}))
 			
 			case 'lines':
@@ -557,7 +1021,9 @@ function TimingSyncPage() {
 							text: line.text,
 							voice: line.voice,
 							blockIndex,
-							lineIndex
+							lineIndex,
+							start: line.start,
+							end: line.end
 						})
 					})
 				})
@@ -567,19 +1033,39 @@ function TimingSyncPage() {
 				const words = []
 				karaokeData.blocks.forEach((block, blockIndex) => {
 					block.lines.forEach((line, lineIndex) => {
-						const lineWords = line.text.split(' ').filter(word => word.trim())
-						lineWords.forEach((word, wordIndex) => {
-							words.push({
-								type: 'word',
-								index: words.length,
-								text: word,
-								voice: line.voice,
-								blockIndex,
-								lineIndex,
-								wordIndex,
-								lineText: line.text
+						if (line.words && Array.isArray(line.words)) {
+							// Use existing word data if available
+							line.words.forEach((word, wordIndex) => {
+								words.push({
+									type: 'word',
+									index: words.length,
+									text: word.text,
+									voice: word.voice || line.voice,
+									blockIndex,
+									lineIndex,
+									wordIndex,
+									start: word.start,
+									end: word.end
+								})
 							})
-						})
+						} else {
+							// Fallback: split line text into words
+							const lineWords = line.text.split(' ').filter(word => word.trim())
+							lineWords.forEach((word, wordIndex) => {
+								words.push({
+									type: 'word',
+									index: words.length,
+									text: word,
+									voice: line.voice,
+									blockIndex,
+									lineIndex,
+									wordIndex,
+									lineText: line.text,
+									start: undefined, // No timing data available
+									end: undefined
+								})
+							})
+						}
 					})
 				})
 				return words
@@ -588,18 +1074,59 @@ function TimingSyncPage() {
 				const chars = []
 				karaokeData.blocks.forEach((block, blockIndex) => {
 					block.lines.forEach((line, lineIndex) => {
-						line.text.split('').forEach((char, charIndex) => {
-							chars.push({
-								type: 'char',
-								index: chars.length,
-								text: char,
-								voice: line.voice,
-								blockIndex,
-								lineIndex,
-								charIndex,
-								lineText: line.text
+						if (line.words && Array.isArray(line.words)) {
+							// Use existing character data if available
+							line.words.forEach((word, wordIndex) => {
+								if (word.chars && Array.isArray(word.chars)) {
+									word.chars.forEach((char, charIndex) => {
+										chars.push({
+											type: 'char',
+											index: chars.length,
+											text: char.text,
+											voice: char.voice || word.voice || line.voice,
+											blockIndex,
+											lineIndex,
+											wordIndex,
+											charIndex,
+											start: char.start,
+											end: char.end
+										})
+									})
+								} else {
+									// Fallback: split word into characters
+									word.text.split('').forEach((char, charIndex) => {
+										chars.push({
+											type: 'char',
+											index: chars.length,
+											text: char,
+											voice: word.voice || line.voice,
+											blockIndex,
+											lineIndex,
+											wordIndex,
+											charIndex,
+											start: undefined, // No timing data available
+											end: undefined
+										})
+									})
+								}
 							})
-						})
+						} else {
+							// Fallback: split line text into characters
+							line.text.split('').forEach((char, charIndex) => {
+								chars.push({
+									type: 'char',
+									index: chars.length,
+									text: char,
+									voice: line.voice,
+									blockIndex,
+									lineIndex,
+									charIndex,
+									lineText: line.text,
+									start: undefined, // No timing data available
+									end: undefined
+								})
+							})
+						}
 					})
 				})
 				return chars
@@ -686,11 +1213,136 @@ function TimingSyncPage() {
 		const displayTokens = getDisplayTokens()
 		if (displayTokens.length === 0) return "No lyrics loaded"
 		
+		// For words and chars modes, group tokens by line
+		if (recordingMode === 'words' || recordingMode === 'chars') {
+			// Group tokens by line
+			const lineGroups = {}
+			displayTokens.forEach(token => {
+				const lineKey = `${token.blockIndex}-${token.lineIndex}`
+				if (!lineGroups[lineKey]) {
+					lineGroups[lineKey] = []
+				}
+				lineGroups[lineKey].push(token)
+			})
+			
+			return (
+				<div style={{
+					display: 'flex',
+					flexDirection: 'column',
+					gap: '1.5rem',
+					alignItems: 'center',
+					justifyContent: 'center',
+					height: '100%',
+					padding: '2rem'
+				}}>
+					{Object.entries(lineGroups).map(([lineKey, lineTokens]) => {
+						const hasActiveToken = lineTokens.some(token => token.isActive)
+						
+						return (
+							<div key={lineKey} style={{
+								display: 'flex',
+								flexWrap: 'wrap',
+								justifyContent: 'center',
+								alignItems: 'center',
+								gap: recordingMode === 'chars' ? '1px' : '4px',
+								fontSize: hasActiveToken ? '2.2rem' : '1.8rem',
+								opacity: hasActiveToken ? 1 : 0.7,
+								transform: hasActiveToken ? 'scale(1.02)' : 'scale(1)',
+								transition: 'all 0.3s ease'
+							}}>
+								{lineTokens.map(token => {
+									const voice = voices.find(v => v.id === token.voice) || voices[0]
+									const isRecordingThisToken = isRecording && token.isActive
+									
+									return (
+										<span
+											key={`${token.type}-${token.displayIndex}`}
+											style={{
+												color: token.isActive ? (voice?.color || '#87CEEB') : 'rgba(255,255,255,0.8)',
+												boxShadow: isRecordingThisToken ? `0 0 20px ${voice?.color || '#87CEEB'}` : 'none',
+												fontWeight: token.isActive ? 'bold' : 'normal',
+												padding: token.isActive ? '4px 8px' : '2px 4px',
+												backgroundColor: token.isActive ? 'rgba(255,255,255,0.2)' : 'transparent',
+												borderRadius: token.isActive ? '4px' : '0',
+												transition: 'all 0.3s ease',
+												display: 'inline-block'
+											}}
+										>
+											{token.text === ' ' ? '\u00A0' : token.text}
+										</span>
+									)
+								})}
+							</div>
+						)
+					})}
+				</div>
+			)
+		}
+		
+		// Original rendering for blocks and lines modes
+		if (recordingMode === 'lines') {
+			// Group lines by blocks for proper spacing
+			const linesByBlock = {}
+			displayTokens.forEach(token => {
+				if (!linesByBlock[token.blockIndex]) {
+					linesByBlock[token.blockIndex] = []
+				}
+				linesByBlock[token.blockIndex].push(token)
+			})
+			
+			return (
+				<div style={{
+					display: 'flex',
+					flexDirection: 'column',
+					alignItems: 'center',
+					justifyContent: 'center',
+					height: '100%',
+					padding: '2rem',
+					gap: '3rem' // Large gap between blocks
+				}}>
+					{Object.entries(linesByBlock).map(([blockIndex, blockTokens]) => (
+						<div key={`block-${blockIndex}`} style={{
+							display: 'flex',
+							flexDirection: 'column',
+							alignItems: 'center',
+							gap: '0.8rem' // Smaller gap between lines within the same block
+						}}>
+							{blockTokens.map((token) => {
+								const voice = voices.find(v => v.id === token.voice) || voices[0]
+								const isRecordingThisToken = isRecording && token.isActive
+								
+								return (
+									<div
+										key={`${token.type}-${token.displayIndex}`}
+										style={{
+											color: token.isActive ? (voice?.color || '#87CEEB') : 'rgba(255,255,255,0.5)',
+											boxShadow: isRecordingThisToken ? `0 0 20px ${voice?.color || '#87CEEB'}` : 'none',
+											fontSize: token.isActive ? '2.2rem' : '1.8rem',
+											fontWeight: token.isActive ? 'bold' : 'normal',
+											textAlign: 'center',
+											lineHeight: '1.4',
+											transition: 'all 0.3s ease',
+											opacity: token.isActive ? 1 : 0.7,
+											transform: token.isActive ? 'scale(1.02)' : 'scale(1)',
+											whiteSpace: 'pre-line'
+										}}
+									>
+										{token.text}
+									</div>
+								)
+							})}
+						</div>
+					))}
+				</div>
+			)
+		}
+		
+		// Blocks mode
 		return (
 			<div style={{
 				display: 'flex',
 				flexDirection: 'column',
-				gap: recordingMode === 'blocks' ? '2rem' : recordingMode === 'lines' ? '1.5rem' : '0.5rem',
+				gap: '2rem',
 				alignItems: 'center',
 				justifyContent: 'center',
 				height: '100%',
@@ -706,25 +1358,14 @@ function TimingSyncPage() {
 							style={{
 								color: token.isActive ? (voice?.color || '#87CEEB') : 'rgba(255,255,255,0.5)',
 								boxShadow: isRecordingThisToken ? `0 0 20px ${voice?.color || '#87CEEB'}` : 'none',
-								fontSize: token.isActive ?
-									(recordingMode === 'blocks' ? '3rem' :
-										recordingMode === 'lines' ? '2.5rem' :
-											recordingMode === 'words' ? '2rem' : '1.5rem') :
-									(recordingMode === 'blocks' ? '1.5rem' :
-										recordingMode === 'lines' ? '1.3rem' :
-											recordingMode === 'words' ? '1.1rem' : '0.9rem'),
+								fontSize: token.isActive ? '2.6rem' : '2rem',
 								fontWeight: token.isActive ? 'bold' : 'normal',
 								textAlign: 'center',
 								lineHeight: '1.4',
 								transition: 'all 0.3s ease',
 								opacity: token.isActive ? 1 : 0.7,
-								transform: token.isActive ? 'scale(1.05)' : 'scale(1)',
-								whiteSpace: recordingMode === 'words' ? 'nowrap' : 'pre-line',
-								display: recordingMode === 'chars' ? 'inline' : 'block',
-								margin: recordingMode === 'chars' ? '0 2px' : '0',
-								padding: recordingMode === 'chars' && token.isActive ? '4px 8px' : '0',
-								backgroundColor: recordingMode === 'chars' && token.isActive ? 'rgba(255,255,255,0.2)' : 'transparent',
-								borderRadius: recordingMode === 'chars' && token.isActive ? '4px' : '0'
+								transform: token.isActive ? 'scale(1.02)' : 'scale(1)',
+								whiteSpace: 'pre-line'
 							}}
 						>
 							{token.text}
@@ -1315,7 +1956,10 @@ function TimingSyncPage() {
 					<div style={{marginTop: '2rem', paddingTop: '2rem', borderTop: '1px solid #ddd'}}>
 						<h4 style={{marginBottom: '1rem', color: '#333'}}>Playback</h4>
 						<button
-							onClick={() => navigate('/playback', { state: { lyricsJson: karaokeData, audioUrl } })}
+							onClick={() => {
+								const cleanedData = cleanupTimingData(karaokeData)
+								navigate('/playback', { state: { lyricsJson: cleanedData, audioUrl } })
+							}}
 							style={{
 								width: '100%',
 								padding: '16px',
@@ -1431,6 +2075,38 @@ function TimingSyncPage() {
 					}}>
 						<span>{formatTime(currentTime)}</span>
 						<span>{formatTime(duration)}</span>
+					</div>
+				</div>
+				
+				{/* Sync Lock Toggle */}
+				<div style={{display: 'flex', alignItems: 'center', gap: '0.5rem'}}>
+					<button
+						onClick={() => setSyncLocked(!syncLocked)}
+						style={{
+							width: '40px',
+							height: '40px',
+							borderRadius: '6px',
+							background: syncLocked ? '#667eea' : '#f8f9fa',
+							color: syncLocked ? 'white' : '#666',
+							border: `2px solid ${syncLocked ? '#667eea' : '#dee2e6'}`,
+							cursor: 'pointer',
+							fontSize: '1.2rem',
+							display: 'flex',
+							alignItems: 'center',
+							justifyContent: 'center',
+							transition: 'all 0.2s ease'
+						}}
+						title={syncLocked ? 'Sync locked: Playhead and tokens move together' : 'Sync unlocked: Independent playhead and token navigation'}
+					>
+						{syncLocked ? '🔒' : '🔓'}
+					</button>
+					<div style={{
+						fontSize: '0.8rem',
+						color: '#666',
+						textAlign: 'center',
+						lineHeight: '1.2'
+					}}>
+						Sync<br/>Lock
 					</div>
 				</div>
 				

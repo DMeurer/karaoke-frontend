@@ -909,7 +909,7 @@ function LyricsPlaybackScreen() {
 					}}>
 						<h3 style={{ margin: 0, color: '#333' }}>Playback</h3>
 						<button
-							onClick={() => navigate('/timing-sync', { state: { audioFile: { name: 'audio' }, karaokeData: lyricsJson } })}
+							onClick={() => navigate('/timing-sync', { state: { audioUrl: audioUrl, karaokeData: lyricsJson } })}
 							style={{
 								padding: '6px 12px',
 								borderRadius: '15px',
